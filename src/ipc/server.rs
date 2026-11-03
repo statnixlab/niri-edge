@@ -288,6 +288,7 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             window_minimization: true,
             window_minimization_animation: true,
             window_minimization_effects: vec!["scale".into(), "genie".into()],
+            per_surface_blur: true,
         }),
         Request::SetWindowAnimationTargets { targets } => {
             if targets.len() > 1024 {

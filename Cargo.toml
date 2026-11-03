@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["smithay-workaround"]
 members = [
     "niri-config",
     "niri-ipc",
@@ -27,14 +28,12 @@ tracy-client = { version = "0.18.5", default-features = false }
 
 [workspace.dependencies.smithay]
 # version = "0.4.1"
-git = "https://github.com/Smithay/smithay.git"
-rev = "79bbed5e1199090d787115614847a79c76607181"
+path = "smithay-workaround"
 default-features = false
 
 [workspace.dependencies.smithay-drm-extras]
 # version = "0.1.0"
-git = "https://github.com/Smithay/smithay.git"
-rev = "79bbed5e1199090d787115614847a79c76607181"
+path = "smithay-workaround/smithay-drm-extras"
 # path = "../smithay/smithay-drm-extras"
 
 [package]

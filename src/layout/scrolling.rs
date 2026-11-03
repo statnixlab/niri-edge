@@ -2649,6 +2649,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         cancel_resize_for_column(&mut self.interactive_resize, col);
     }
 
+    pub fn toggle_full_width_for_window(&mut self, window: &W::Id) {
+        let Some(col) = self.columns.iter_mut().find(|col| col.contains(window)) else {
+            return;
+        };
+        col.toggle_full_width();
+        cancel_resize_for_column(&mut self.interactive_resize, col);
+    }
+
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
         if self.columns.is_empty() {
             return;

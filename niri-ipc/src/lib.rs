@@ -189,6 +189,9 @@ pub struct Capabilities {
     /// Supported values for `animations { window-minimize-effect "..."; }`.
     #[serde(default)]
     pub window_minimization_effects: Vec<String>,
+    /// Per-surface blur strength with non-xray background effects.
+    #[serde(default)]
+    pub per_surface_blur: bool,
 }
 
 /// Dock edge in the output's logical coordinate system, after output transform.
@@ -2263,6 +2266,7 @@ mod tests {
         let legacy: Capabilities =
             serde_json::from_value(serde_json::json!({"window_minimization": true})).unwrap();
         assert!(!legacy.window_minimization_animation);
+        assert!(!legacy.per_surface_blur);
         for (request, wire) in [
             (Request::Capabilities, serde_json::json!("Capabilities")),
             (
@@ -2285,10 +2289,11 @@ mod tests {
             window_minimization: true,
             window_minimization_animation: true,
             window_minimization_effects: vec!["scale".into(), "genie".into()],
+            per_surface_blur: true,
         });
         assert_eq!(
             serde_json::to_value(response).unwrap(),
-            serde_json::json!({"Capabilities": {"window_minimization": true, "window_minimization_animation": true, "window_minimization_effects": ["scale", "genie"]}})
+            serde_json::json!({"Capabilities": {"window_minimization": true, "window_minimization_animation": true, "window_minimization_effects": ["scale", "genie"], "per_surface_blur": true}})
         );
     }
 

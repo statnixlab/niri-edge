@@ -25,6 +25,9 @@ debug {
     disable-pipewire-dmabuf
     dbus-interfaces-in-non-session-instances
     wait-for-frame-completion-before-queueing
+    force-full-repaint
+    full-repaint-reuse-buffers
+    high-refresh-workaround-above 144
     emulate-zero-presentation-time
     disable-resize-throttling
     disable-transactions
@@ -35,6 +38,7 @@ debug {
     skip-cursor-only-updates-during-vrr
     deactivate-unfocused-windows
     disable-10bit-output
+    prefer-16bit-output
 }
 
 binds {
@@ -203,6 +207,62 @@ debug {
 }
 ```
 
+### `force-full-repaint`
+
+Reset the DRM swapchain buffer ages before each scheduled frame.
+For composed frames, Smithay then repaints the entire output instead of reusing buffer-age damage history.
+This is an opt-in diagnostic for partial-repaint artifacts and takes effect on configuration reload.
+
+It does not schedule continuous redraws or disable direct scanout, and ordinary opaque-region occlusion remains in effect.
+This can increase GPU bandwidth and buffer allocations, so disable it after the comparison unless it is needed as a workaround.
+It can be used together with `prefer-16bit-output`.
+
+```kdl
+debug {
+    force-full-repaint
+}
+```
+
+### `full-repaint-reuse-buffers`
+
+Use a full-output damage marker instead of resetting swapchain buffer ages when `force-full-repaint` is enabled.
+The marker does not draw pixels and preserves the existing buffer, DMA-BUF and framebuffer caches.
+It still repaints the full output for each scheduled composed frame. The leading marker prevents primary-plane direct scanout; hardware cursor allocation remains available.
+It does not schedule continuous redraws or affect screenshot and screencast render targets.
+
+This flag is disabled by default and has no effect without `force-full-repaint`.
+Changes take effect on configuration reload; remove this flag to return to the original buffer-age reset path.
+
+```kdl
+debug {
+    force-full-repaint
+    full-repaint-reuse-buffers
+}
+```
+
+### `high-refresh-workaround-above`
+
+Optionally limit `force-full-repaint`, `prefer-16bit-output`, and `restrict-primary-scanout-to-matching-format` to output modes strictly above a refresh rate, specified as an integer in Hz.
+For example, `144` disables those options at 143.998 or 144 Hz and allows them at 160 Hz.
+The options must still be enabled individually; this threshold does not turn them on by itself.
+`disable-10bit-output` remains independent and takes precedence over the 16-bit preference.
+Without a threshold, the existing options keep their unconditional behavior.
+
+The policy follows each output's selected DRM mode, including temporary mode previews and their rollback.
+It is checked on scheduled frames without polling or disconnecting the output.
+When the color policy changes, niri tests the renderer-supported format and modifier candidates and replaces the swapchain in place.
+If all candidates fail, it keeps the previous format and logs a warning; it does not retry every frame.
+The actual refresh rate, selected format, and effective workaround options are logged at initialization and policy changes.
+
+```kdl
+debug {
+    force-full-repaint
+    prefer-16bit-output
+    restrict-primary-scanout-to-matching-format
+    high-refresh-workaround-above 144
+}
+```
+
 ### `emulate-zero-presentation-time`
 
 Emulate zero (unknown) presentation time returned from DRM.
@@ -351,10 +411,36 @@ By default, niri will try to output a 10-bit color format to the monitor (before
 However, this can currently cause problems on some Intel + NVIDIA mixed-GPU setups: the screen doesn't light up, or displays only white, etc.
 
 Until this is fixed in Smithay, you can disable 10-bit color formats by setting this debug flag.
+This also disables the 16-bit preference if `prefer-16bit-output` is set.
 
 ```kdl
 debug {
     disable-10bit-output
+}
+```
+
+### `prefer-16bit-output`
+
+Prefer a 16-bit floating-point composition buffer (`ABGR16161616F`) on DRM outputs.
+This is an opt-in workaround to test for NVIDIA artifacts at high refresh rates.
+It does not enable HDR or request a specific display-signal bit depth.
+
+The format must be supported by both the renderer and the output plane.
+If allocation or the DRM configuration test fails, niri falls back to its usual 10-bit and then 8-bit formats.
+`disable-10bit-output` takes precedence and keeps composition buffers at 8 bits per channel.
+
+The preference is applied when an output is initialized and when its color policy changes on a scheduled frame.
+The selected format is logged at initialization and policy changes.
+FP16 buffers use twice the memory per buffer compared with 10-bit or 8-bit buffers and can increase memory bandwidth usage.
+Screenshots and screencasts retain their existing formats.
+
+Direct scanout can otherwise use an application's buffer format instead.
+To keep the primary plane in the selected composition format, also use `restrict-primary-scanout-to-matching-format`.
+
+```kdl
+debug {
+    prefer-16bit-output
+    restrict-primary-scanout-to-matching-format
 }
 ```
 

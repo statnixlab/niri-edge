@@ -3164,6 +3164,20 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_full_width();
     }
 
+    pub fn toggle_full_width_for_window(&mut self, window: &W::Id) {
+        if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
+            if move_.tile.window().id() == window {
+                return;
+            }
+        }
+        for ws in self.workspaces_mut() {
+            if ws.has_window(window) {
+                ws.toggle_full_width_for_window(window);
+                return;
+            }
+        }
+    }
+
     pub fn set_column_width(&mut self, change: SizeChange) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

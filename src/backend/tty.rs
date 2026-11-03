@@ -18,7 +18,7 @@ use niri_config::output::{MaxBpc, Modeline};
 use niri_config::{Config, OutputName};
 use niri_ipc::{HSyncPolarity, VSyncPolarity};
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::allocator::format::FormatSet;
+use smithay::backend::allocator::format::{get_opaque, FormatSet};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement};
@@ -51,7 +51,7 @@ use smithay::reexports::input::Libinput;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{DeviceFd, Transform};
+use smithay::utils::{DeviceFd, Rectangle, Transform};
 use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlobal};
 use smithay::wayland::drm_lease::{
     DrmLease, DrmLeaseBuilder, DrmLeaseRequest, DrmLeaseState, LeaseRejected,
@@ -65,10 +65,13 @@ use super::{IpcOutputMap, RenderResult};
 use crate::backend::OutputId;
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
+use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::debug::draw_damage;
 use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
-use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
+use crate::utils::{
+    get_monotonic_time, is_laptop_panel, logical_output, output_size, PanelOrientation,
+};
 
 // When copying from rendering Nvidia dGPU to target iGPU,
 // it only understands X/Abgr and not X/Argb.
@@ -77,6 +80,132 @@ const SUPPORTED_COLOR_FORMATS_10BIT: [Fourcc; 3] =
 
 // Smithay should fall back to Xrgb/Xbgr automatically if needed.
 const SUPPORTED_COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Abgr8888];
+
+const SUPPORTED_COLOR_FORMATS_16BIT: [Fourcc; 4] = [
+    Fourcc::Abgr16161616f,
+    Fourcc::Abgr2101010,
+    Fourcc::Argb8888,
+    Fourcc::Abgr8888,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputColorPolicy {
+    EightBit,
+    TenBit,
+    PreferSixteenBit,
+}
+
+impl OutputColorPolicy {
+    fn formats(self) -> &'static [Fourcc] {
+        match self {
+            Self::EightBit => &SUPPORTED_COLOR_FORMATS,
+            Self::TenBit => &SUPPORTED_COLOR_FORMATS_10BIT,
+            Self::PreferSixteenBit => &SUPPORTED_COLOR_FORMATS_16BIT,
+        }
+    }
+}
+
+fn output_format_modifiers(
+    renderer_formats: &FormatSet,
+    plane_formats: &FormatSet,
+    code: Fourcc,
+    implicit_only: bool,
+) -> Vec<Modifier> {
+    let opaque_code = get_opaque(code).unwrap_or(code);
+    let plane_formats = plane_formats
+        .iter()
+        .filter(|format| format.code == code || format.code == opaque_code)
+        .collect::<Vec<_>>();
+    let renderer_formats = renderer_formats
+        .iter()
+        .filter(|format| {
+            format.code == code && (!implicit_only || format.modifier == Modifier::Invalid)
+        })
+        .collect::<Vec<_>>();
+    if plane_formats.is_empty() || renderer_formats.is_empty() {
+        return Vec::new();
+    }
+
+    // Keep Smithay's find_supported_format negotiation, including its implicit/linear
+    // bridge. set_format still performs the final plane intersection and DRM test;
+    // in particular, do not invent explicit linear support for an implicit-only renderer.
+    if (plane_formats.len() == 1
+        && plane_formats[0].modifier == Modifier::Invalid
+        && renderer_formats
+            .iter()
+            .all(|f| f.modifier != Modifier::Invalid)
+        && renderer_formats
+            .iter()
+            .any(|f| f.modifier == Modifier::Linear))
+        || (renderer_formats.len() == 1
+            && renderer_formats[0].modifier == Modifier::Invalid
+            && plane_formats
+                .iter()
+                .all(|f| f.modifier != Modifier::Invalid)
+            && plane_formats.iter().any(|f| f.modifier == Modifier::Linear))
+    {
+        return vec![Modifier::Invalid];
+    }
+
+    let mut modifiers = Vec::new();
+    for format in plane_formats {
+        if renderer_formats
+            .iter()
+            .any(|f| f.modifier == format.modifier)
+            && !modifiers.contains(&format.modifier)
+        {
+            modifiers.push(format.modifier);
+        }
+    }
+    modifiers
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputRenderPolicy {
+    color: OutputColorPolicy,
+    force_full_repaint: bool,
+    reuse_buffers: bool,
+    keep_previous_frame_buffer: bool,
+    restrict_primary_scanout: bool,
+}
+
+impl OutputRenderPolicy {
+    fn for_refresh(debug: &niri_config::Debug, refresh_millihertz: i32) -> Self {
+        let allowed = debug
+            .high_refresh_workaround_above
+            .is_none_or(|hz| i64::from(refresh_millihertz) > i64::from(hz) * 1000);
+        let force_full_repaint = allowed && debug.force_full_repaint;
+        // The explicit 8-bit override is independent of the refresh-rate threshold.
+        let color = if debug.disable_10bit_output {
+            OutputColorPolicy::EightBit
+        } else if allowed && debug.prefer_16bit_output {
+            OutputColorPolicy::PreferSixteenBit
+        } else {
+            OutputColorPolicy::TenBit
+        };
+        Self {
+            color,
+            force_full_repaint,
+            reuse_buffers: force_full_repaint && debug.full_repaint_reuse_buffers,
+            keep_previous_frame_buffer: allowed && debug.keep_previous_frame_buffer,
+            restrict_primary_scanout: allowed && debug.restrict_primary_scanout_to_matching_format,
+        }
+    }
+
+    fn log(self, output: &str, refresh_millihertz: i32, actual_format: Fourcc) {
+        info!(
+            output,
+            refresh_millihertz,
+            format = ?actual_format,
+            requested_color = ?self.color,
+            force_full_repaint = self.force_full_repaint,
+            reuse_buffers = self.reuse_buffers,
+            keep_previous_frame_buffer = self.keep_previous_frame_buffer,
+            restrict_primary_scanout = self.restrict_primary_scanout,
+            "output rendering policy"
+        );
+    }
+}
 
 pub struct Tty {
     config: Rc<RefCell<Config>>,
@@ -374,6 +503,10 @@ struct TtyOutputState {
 struct Surface {
     name: OutputName,
     compositor: GbmDrmCompositor,
+    render_formats: FormatSet,
+    /// Last attempted policy, including failed format requests, to avoid per-frame retries.
+    render_policy: OutputRenderPolicy,
+    full_repaint_damage: ExtraDamage,
     connector: connector::Handle,
     dmabuf_feedback: Option<SurfaceDmabufFeedback>,
     gamma_props: Option<GammaProps>,
@@ -388,6 +521,73 @@ struct Surface {
     /// Plot name for the presentation misprediction plot.
     presentation_misprediction_plot_name: tracy_client::PlotName,
     sequence_delta_plot_name: tracy_client::PlotName,
+}
+
+impl Surface {
+    fn update_render_policy(
+        &mut self,
+        allocator: &GbmAllocator<DeviceFd>,
+        policy: OutputRenderPolicy,
+        refresh_millihertz: i32,
+    ) {
+        if self.render_policy == policy {
+            return;
+        }
+
+        if self.render_policy.color != policy.color {
+            let mut selected = false;
+            // Match initialization: try all renderer modifiers first, then only implicit
+            // modifiers if every format failed. Never discard the current swapchain on error.
+            'formats: for implicit_only in [false, true] {
+                for &code in policy.color.formats() {
+                    if code == self.compositor.format() {
+                        selected = true;
+                        break 'formats;
+                    }
+                    let modifiers = output_format_modifiers(
+                        &self.render_formats,
+                        &self.compositor.surface().plane_info().formats,
+                        code,
+                        implicit_only,
+                    );
+                    if modifiers.is_empty() {
+                        continue;
+                    }
+                    match self
+                        .compositor
+                        .set_format(allocator.clone(), code, modifiers)
+                    {
+                        Ok(()) => {
+                            selected = true;
+                            break 'formats;
+                        }
+                        Err(err) => warn!(
+                            output = %self.name.connector,
+                            ?code,
+                            implicit_only,
+                            "could not change output composition format: {err:?}"
+                        ),
+                    }
+                }
+            }
+            if !selected {
+                warn!(
+                    output = %self.name.connector,
+                    format = ?self.compositor.format(),
+                    "keeping previous output format after all policy candidates failed"
+                );
+            }
+        }
+
+        self.compositor
+            .set_keep_previous_frame_buffer(policy.keep_previous_frame_buffer);
+        self.render_policy = policy;
+        policy.log(
+            &self.name.connector,
+            refresh_millihertz,
+            self.compositor.format(),
+        );
+    }
 }
 
 pub struct SurfaceDmabufFeedback {
@@ -1449,13 +1649,9 @@ impl Tty {
             })
             .collect::<FormatSet>();
 
-        let color_formats = if self.config.borrow().debug.disable_10bit_output {
-            &SUPPORTED_COLOR_FORMATS[..]
-        } else {
-            &SUPPORTED_COLOR_FORMATS_10BIT[..]
-        }
-        .iter()
-        .copied();
+        let render_policy =
+            OutputRenderPolicy::for_refresh(&self.config.borrow().debug, wl_mode.refresh);
+        let color_formats = render_policy.color.formats().iter().copied();
 
         // Create the compositor.
         let res = DrmCompositor::new(
@@ -1507,6 +1703,9 @@ impl Tty {
             compositor.set_debug_flags(DebugFlags::TINT);
         }
 
+        compositor.set_keep_previous_frame_buffer(render_policy.keep_previous_frame_buffer);
+        render_policy.log(&connector_name, wl_mode.refresh, compositor.format());
+
         let mut dmabuf_feedback = None;
         if let Ok(primary_renderer) = self.gpu_manager.single_renderer(&self.primary_render_node) {
             let primary_formats = primary_renderer.dmabuf_formats();
@@ -1552,6 +1751,9 @@ impl Tty {
             name: output_name,
             connector: connector.handle(),
             compositor,
+            render_formats,
+            render_policy,
+            full_repaint_damage: ExtraDamage::new(),
             dmabuf_feedback,
             gamma_props,
             pending_gamma_change: None,
@@ -1900,6 +2102,10 @@ impl Tty {
             return rv;
         }
 
+        let refresh = Mode::from(surface.compositor.pending_mode()).refresh;
+        let render_policy = OutputRenderPolicy::for_refresh(&self.config.borrow().debug, refresh);
+        surface.update_render_policy(&device.allocator, render_policy, refresh);
+
         let mut renderer = match self.gpu_manager.renderer(
             &self.primary_render_node,
             &device.render_node.unwrap_or(self.primary_render_node),
@@ -1920,6 +2126,16 @@ impl Tty {
         };
         let mut elements = niri.render_to_vec(ctx, output, true);
 
+        let force_full_repaint = render_policy.force_full_repaint;
+        let reuse_buffers = render_policy.reuse_buffers;
+        if force_full_repaint && reuse_buffers {
+            surface.full_repaint_damage.damage_all();
+            let geometry = Rectangle::from_size(output_size(output));
+            // Elements are front-to-back. Keep this no-op marker ahead of opaque surfaces
+            // so it cannot be culled, forcing full damage without discarding cached buffers.
+            elements.insert(0, surface.full_repaint_damage.render(geometry).into());
+        }
+
         // Visualize the damage, if enabled.
         if niri.debug_draw_damage {
             let output_state = niri.output_state.get_mut(output).unwrap();
@@ -1931,7 +2147,7 @@ impl Tty {
         let flags = {
             let debug = &self.config.borrow().debug;
 
-            let primary_scanout_flag = if debug.restrict_primary_scanout_to_matching_format {
+            let primary_scanout_flag = if render_policy.restrict_primary_scanout {
                 FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
             } else {
                 FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
@@ -1960,6 +2176,10 @@ impl Tty {
 
         // Hand them over to the DRM.
         let drm_compositor = &mut surface.compositor;
+        if force_full_repaint && !reuse_buffers {
+            // Smithay treats an age of zero as full-output damage for the next composed frame.
+            drm_compositor.reset_buffer_ages();
+        }
         match drm_compositor.render_frame::<_, _>(&mut renderer, &elements, [0.; 4], flags) {
             Ok(res) => {
                 let needs_sync = res.needs_sync()
@@ -3619,8 +3839,163 @@ mod tests {
     use insta::assert_debug_snapshot;
     use niri_config::output::Modeline;
     use niri_ipc::{HSyncPolarity, VSyncPolarity};
+    use smithay::backend::allocator::format::FormatSet;
+    use smithay::backend::allocator::{Format, Fourcc, Modifier};
 
-    use crate::backend::tty::{calculate_drm_mode_from_modeline, calculate_mode_cvt};
+    use crate::backend::tty::{
+        calculate_drm_mode_from_modeline, calculate_mode_cvt, output_format_modifiers,
+        OutputColorPolicy, OutputRenderPolicy,
+    };
+
+    #[test]
+    fn output_modifiers_preserve_smithay_implicit_linear_bridge() {
+        let code = Fourcc::Abgr16161616f;
+        let formats = |code, modifier| FormatSet::from_iter([Format { code, modifier }]);
+        let implicit = formats(code, Modifier::Invalid);
+        let linear = formats(code, Modifier::Linear);
+        assert_eq!(
+            output_format_modifiers(&linear, &implicit, code, false),
+            [Modifier::Invalid]
+        );
+        assert_eq!(
+            output_format_modifiers(&implicit, &linear, code, false),
+            [Modifier::Invalid]
+        );
+        // The second case intentionally remains Invalid: set_format may reject it if
+        // the plane lacks implicit support, just as it does during initialization.
+        let opaque_implicit = formats(Fourcc::Xbgr16161616f, Modifier::Invalid);
+        assert_eq!(
+            output_format_modifiers(&linear, &opaque_implicit, code, false),
+            [Modifier::Invalid]
+        );
+
+        let unrelated = formats(Fourcc::Argb8888, Modifier::Linear);
+        assert!(output_format_modifiers(&unrelated, &implicit, code, false).is_empty());
+        assert!(output_format_modifiers(&linear, &unrelated, code, false).is_empty());
+        let non_linear = formats(code, Modifier::Unrecognized(42));
+        assert!(output_format_modifiers(&non_linear, &implicit, code, false).is_empty());
+        assert!(output_format_modifiers(&implicit, &non_linear, code, false).is_empty());
+        assert_eq!(
+            output_format_modifiers(&non_linear, &non_linear, code, false),
+            [Modifier::Unrecognized(42)]
+        );
+        assert!(output_format_modifiers(&linear, &implicit, code, true).is_empty());
+        assert_eq!(
+            output_format_modifiers(&implicit, &implicit, code, true),
+            [Modifier::Invalid]
+        );
+    }
+
+    #[test]
+    fn high_refresh_policy_tracks_both_mode_switch_directions() {
+        let config = niri_config::Config::parse_mem(
+            "debug { high-refresh-workaround-above 144; force-full-repaint; \
+             prefer-16bit-output; restrict-primary-scanout-to-matching-format; }",
+        )
+        .unwrap();
+
+        // Follow actual advertised millihertz, including the monitor's 143.998 Hz mode,
+        // an exact threshold, and repeated switches in both directions.
+        for (refresh, active) in [
+            (143_998, false),
+            (144_000, false),
+            (160_000, true),
+            (144_000, false),
+            (160_000, true),
+            (143_998, false),
+        ] {
+            let policy = OutputRenderPolicy::for_refresh(&config.debug, refresh);
+            assert_eq!(policy.force_full_repaint, active);
+            assert_eq!(policy.restrict_primary_scanout, active);
+            assert_eq!(
+                policy.color,
+                if active {
+                    OutputColorPolicy::PreferSixteenBit
+                } else {
+                    OutputColorPolicy::TenBit
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn high_refresh_policy_preserves_defaults_and_explicit_eight_bit() {
+        let default = niri_config::Debug::default();
+        let policy = OutputRenderPolicy::for_refresh(&default, 160_000);
+        assert_eq!(policy.color, OutputColorPolicy::TenBit);
+        assert!(!policy.force_full_repaint);
+        assert!(!policy.restrict_primary_scanout);
+
+        let mut config = niri_config::Config::parse_mem(
+            "debug { force-full-repaint; full-repaint-reuse-buffers; \
+             prefer-16bit-output; restrict-primary-scanout-to-matching-format; }",
+        )
+        .unwrap();
+        let policy = OutputRenderPolicy::for_refresh(&config.debug, 60_000);
+        assert_eq!(policy.color, OutputColorPolicy::PreferSixteenBit);
+        assert!(policy.force_full_repaint);
+        assert!(policy.reuse_buffers);
+        assert!(policy.restrict_primary_scanout);
+
+        config.debug.high_refresh_workaround_above = Some(144);
+        config.debug.disable_10bit_output = true;
+        for (refresh, active) in [(144_000, false), (160_000, true)] {
+            let policy = OutputRenderPolicy::for_refresh(&config.debug, refresh);
+            assert_eq!(policy.color, OutputColorPolicy::EightBit);
+            assert_eq!(policy.force_full_repaint, active);
+            assert_eq!(policy.reuse_buffers, active);
+            assert_eq!(policy.restrict_primary_scanout, active);
+        }
+
+        // Large valid u32 thresholds must not overflow when converted to millihertz.
+        config.debug.high_refresh_workaround_above = Some(u32::MAX);
+        assert!(!OutputRenderPolicy::for_refresh(&config.debug, 160_000).force_full_repaint);
+    }
+
+    #[test]
+    fn retained_frame_policy_supports_isolated_trial_and_rollback() {
+        let sh = xshell::Shell::new().unwrap();
+        let temp = sh.create_temp_dir().unwrap();
+        let original = temp.path().join("original.kdl");
+        let trial = temp.path().join("trial.kdl");
+        let rollback = temp.path().join("rollback.kdl");
+        std::fs::write(
+            &original,
+            "debug { high-refresh-workaround-above 144; force-full-repaint; \
+             prefer-16bit-output; restrict-primary-scanout-to-matching-format; }",
+        )
+        .unwrap();
+        std::fs::write(
+            &trial,
+            "include \"original.kdl\"\n\
+             debug { force-full-repaint false; prefer-16bit-output false; \
+             restrict-primary-scanout-to-matching-format false; keep-previous-frame-buffer; }",
+        )
+        .unwrap();
+        let config = niri_config::Config::load(&trial).config.unwrap();
+        for (refresh, active) in [(160_000, true), (144_000, false), (160_000, true)] {
+            let policy = OutputRenderPolicy::for_refresh(&config.debug, refresh);
+            assert_eq!(policy.keep_previous_frame_buffer, active);
+            assert_eq!(policy.color, OutputColorPolicy::TenBit);
+            assert!(!policy.force_full_repaint);
+            assert!(!policy.restrict_primary_scanout);
+        }
+        std::fs::write(
+            &rollback,
+            "include \"trial.kdl\"\n\
+             debug { keep-previous-frame-buffer false; force-full-repaint; prefer-16bit-output; }",
+        )
+        .unwrap();
+        let config = niri_config::Config::load(&rollback).config.unwrap();
+        let policy = OutputRenderPolicy::for_refresh(&config.debug, 160_000);
+        assert!(!policy.keep_previous_frame_buffer);
+        assert!(policy.force_full_repaint);
+        assert_eq!(policy.color, OutputColorPolicy::PreferSixteenBit);
+        assert!(
+            !OutputRenderPolicy::for_refresh(&niri_config::Debug::default(), 160_000)
+                .keep_previous_frame_buffer
+        );
+    }
 
     #[test]
     fn test_calculate_drmmode_from_modeline() {

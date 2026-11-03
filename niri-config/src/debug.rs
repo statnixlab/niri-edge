@@ -7,6 +7,10 @@ pub struct Debug {
     pub preview_render: Option<PreviewRender>,
     pub dbus_interfaces_in_non_session_instances: bool,
     pub wait_for_frame_completion_before_queueing: bool,
+    pub force_full_repaint: bool,
+    pub full_repaint_reuse_buffers: bool,
+    pub keep_previous_frame_buffer: bool,
+    pub high_refresh_workaround_above: Option<u32>,
     pub enable_overlay_planes: bool,
     pub disable_cursor_plane: bool,
     pub disable_direct_scanout: bool,
@@ -26,6 +30,7 @@ pub struct Debug {
     pub deactivate_unfocused_windows: bool,
     pub skip_cursor_only_updates_during_vrr: bool,
     pub disable_10bit_output: bool,
+    pub prefer_16bit_output: bool,
 }
 
 #[derive(knuffel::Decode, Debug, Default, PartialEq)]
@@ -36,6 +41,14 @@ pub struct DebugPart {
     pub dbus_interfaces_in_non_session_instances: Option<Flag>,
     #[knuffel(child)]
     pub wait_for_frame_completion_before_queueing: Option<Flag>,
+    #[knuffel(child)]
+    pub force_full_repaint: Option<Flag>,
+    #[knuffel(child)]
+    pub full_repaint_reuse_buffers: Option<Flag>,
+    #[knuffel(child)]
+    pub keep_previous_frame_buffer: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub high_refresh_workaround_above: Option<u32>,
     #[knuffel(child)]
     pub enable_overlay_planes: Option<Flag>,
     #[knuffel(child)]
@@ -74,6 +87,8 @@ pub struct DebugPart {
     pub skip_cursor_only_updates_during_vrr: Option<Flag>,
     #[knuffel(child)]
     pub disable_10bit_output: Option<Flag>,
+    #[knuffel(child)]
+    pub prefer_16bit_output: Option<Flag>,
 }
 
 impl MergeWith<DebugPart> for Debug {
@@ -82,6 +97,9 @@ impl MergeWith<DebugPart> for Debug {
             (self, part),
             dbus_interfaces_in_non_session_instances,
             wait_for_frame_completion_before_queueing,
+            force_full_repaint,
+            full_repaint_reuse_buffers,
+            keep_previous_frame_buffer,
             enable_overlay_planes,
             disable_cursor_plane,
             disable_direct_scanout,
@@ -99,9 +117,11 @@ impl MergeWith<DebugPart> for Debug {
             deactivate_unfocused_windows,
             skip_cursor_only_updates_during_vrr,
             disable_10bit_output,
+            prefer_16bit_output,
         );
 
         merge_clone_opt!((self, part), preview_render, render_drm_device);
+        merge_clone_opt!((self, part), high_refresh_workaround_above);
 
         self.ignored_drm_devices
             .extend(part.ignored_drm_devices.iter().cloned());
