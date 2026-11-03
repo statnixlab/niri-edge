@@ -429,6 +429,13 @@ impl<W: LayoutElement> Workspace<W> {
         self.background_buffer
             .set_color(options.layout.background_color);
 
+        if options.layout.floating_windows_follow_focus
+            && !self.options.layout.floating_windows_follow_focus
+            && matches!(self.floating_is_active, FloatingActive::No)
+        {
+            self.floating.lower_all();
+        }
+
         self.base_options = base_options;
         self.options = options;
     }
@@ -664,7 +671,7 @@ impl<W: LayoutElement> Workspace<W> {
                         .add_tile(None, tile, activate, width, is_full_width, anim);
 
                     if activate {
-                        self.floating_is_active = FloatingActive::No;
+                        self.focus_scrolling_and_lower_floating();
                     }
                 }
             }
@@ -674,7 +681,7 @@ impl<W: LayoutElement> Workspace<W> {
                     .add_tile(Some(col_idx), tile, activate, width, is_full_width, anim);
 
                 if activate {
-                    self.floating_is_active = FloatingActive::No;
+                    self.focus_scrolling_and_lower_floating();
                 }
             }
             WorkspaceAddWindowTarget::NextTo(next_to) => {
@@ -714,7 +721,7 @@ impl<W: LayoutElement> Workspace<W> {
                         .add_tile(None, tile, activate, width, is_full_width, anim);
 
                     if activate {
-                        self.floating_is_active = FloatingActive::No;
+                        self.focus_scrolling_and_lower_floating();
                     }
                 } else {
                     self.scrolling.add_tile_right_of(
@@ -727,7 +734,7 @@ impl<W: LayoutElement> Workspace<W> {
                     );
 
                     if activate {
-                        self.floating_is_active = FloatingActive::No;
+                        self.focus_scrolling_and_lower_floating();
                     }
                 }
             }
@@ -746,7 +753,7 @@ impl<W: LayoutElement> Workspace<W> {
             .add_tile_to_column(col_idx, tile_idx, tile, activate);
 
         if activate {
-            self.floating_is_active = FloatingActive::No;
+            self.focus_scrolling_and_lower_floating();
         }
     }
 
@@ -763,14 +770,22 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.add_column(None, column, activate, anim);
 
         if activate {
-            self.floating_is_active = FloatingActive::No;
+            self.focus_scrolling_and_lower_floating();
         }
     }
 
     fn update_focus_floating_tiling_after_removing(&mut self, removed_from_floating: bool) {
         if removed_from_floating {
-            if self.floating.is_empty() {
-                self.floating_is_active = FloatingActive::No;
+            if self.floating.is_empty()
+                || (self.options.layout.floating_windows_follow_focus
+                    && self.floating_is_active.get()
+                    && !self.scrolling.is_empty()
+                    && self
+                        .floating
+                        .active_window()
+                        .is_some_and(|window| !self.floating.is_above_tiling(window.id())))
+            {
+                self.focus_scrolling_and_lower_floating();
             }
         } else {
             // Scrolling should remain focused if both are empty.
@@ -1303,6 +1318,14 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.toggle_full_width();
     }
 
+    pub fn toggle_full_width_for_window(&mut self, window: &W::Id) {
+        // Match maximize-column: floating windows are left unchanged.
+        if self.floating.has_window(window) {
+            return;
+        }
+        self.scrolling.toggle_full_width_for_window(window);
+    }
+
     pub fn set_column_width(&mut self, change: SizeChange) {
         if self.floating_is_active.get() {
             self.floating.set_window_width(None, change, true);
@@ -1521,7 +1544,7 @@ impl<W: LayoutElement> Workspace<W> {
                 None,
             );
             if target_is_active {
-                self.floating_is_active = FloatingActive::No;
+                self.focus_scrolling_and_lower_floating();
             }
         } else {
             let mut removed = self.scrolling.remove_tile(&id, Transaction::new());
@@ -1568,6 +1591,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.toggle_window_floating(id);
     }
 
+    fn focus_scrolling_and_lower_floating(&mut self) {
+        self.floating_is_active = FloatingActive::No;
+        self.floating.lower_all();
+    }
+
     pub fn focus_floating(&mut self) {
         if !self.floating_is_active.get() {
             self.switch_focus_floating_tiling();
@@ -1589,11 +1617,12 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         }
 
-        self.floating_is_active = if self.floating_is_active.get() {
-            FloatingActive::No
+        if self.floating_is_active.get() {
+            self.focus_scrolling_and_lower_floating();
         } else {
-            FloatingActive::Yes
-        };
+            self.floating_is_active = FloatingActive::Yes;
+            self.floating.raise_active();
+        }
     }
 
     pub fn move_floating_window(
@@ -1697,13 +1726,18 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn tiles_with_render_positions(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
-        let scrolling = self.scrolling.tiles_with_render_positions();
-
-        let floating = self.floating.tiles_with_render_positions();
         let visible = self.is_floating_visible();
-        let floating = floating.map(move |(tile, pos)| (tile, pos, visible));
-
-        floating.chain(scrolling)
+        let raised = self
+            .floating
+            .tiles_with_render_positions_in_layer(true)
+            .map(move |(tile, pos)| (tile, pos, visible));
+        let lowered = self
+            .floating
+            .tiles_with_render_positions_in_layer(false)
+            .map(move |(tile, pos)| (tile, pos, visible));
+        raised
+            .chain(self.scrolling.tiles_with_render_positions())
+            .chain(lowered)
     }
 
     pub fn tiles_with_render_positions_mut(
@@ -1758,6 +1792,7 @@ impl<W: LayoutElement> Workspace<W> {
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        above_tiling: bool,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         if !self.is_floating_visible() && layer.is_normal() {
@@ -1772,6 +1807,7 @@ impl<W: LayoutElement> Workspace<W> {
             view_rect,
             floating_focus_ring,
             layer,
+            above_tiling,
             &mut |elem| push(elem.into()),
         );
     }
@@ -1795,6 +1831,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn render_above_top_layer(&self) -> bool {
         self.scrolling.render_above_top_layer()
+    }
+
+    pub fn floating_window_above_scrolling(&self, id: &W::Id) -> bool {
+        self.floating.is_above_tiling(id)
     }
 
     pub fn is_floating_visible(&self) -> bool {
@@ -1872,18 +1912,19 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
-        // This logic is consistent with tiles_with_render_positions().
-        if self.is_floating_visible() {
-            if let Some(rv) = self
-                .floating
-                .tiles_with_render_positions()
-                .find_map(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
-            {
-                return Some(rv);
-            }
-        }
-
-        self.scrolling.window_under(pos)
+        // Use exactly the same per-window partitions as rendering and resize targeting.
+        let hit_floating = |above| {
+            self.is_floating_visible()
+                .then(|| {
+                    self.floating
+                        .tiles_with_render_positions_in_layer(above)
+                        .find_map(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
+                })
+                .flatten()
+        };
+        hit_floating(true)
+            .or_else(|| self.scrolling.window_under(pos))
+            .or_else(|| hit_floating(false))
     }
 
     pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
@@ -1952,7 +1993,7 @@ impl<W: LayoutElement> Workspace<W> {
             self.floating_is_active = FloatingActive::Yes;
             true
         } else if self.scrolling.activate_window(window) {
-            self.floating_is_active = FloatingActive::No;
+            self.focus_scrolling_and_lower_floating();
             true
         } else {
             false

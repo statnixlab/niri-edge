@@ -1484,6 +1484,7 @@ mod tests {
                 ],
                 center_focused_column: OnOverflow,
                 always_center_single_column: false,
+                client_maximize_to_column: false,
                 empty_workspace_above_first: false,
                 default_column_display: Tabbed,
                 gaps: 8.0,
@@ -1921,6 +1922,7 @@ mod tests {
                     background_effect: BackgroundEffectRule {
                         xray: None,
                         blur: None,
+                        blur_passes: None,
                         noise: None,
                         saturation: None,
                     },
@@ -1930,6 +1932,7 @@ mod tests {
                         background_effect: BackgroundEffectRule {
                             xray: None,
                             blur: None,
+                            blur_passes: None,
                             noise: None,
                             saturation: None,
                         },
@@ -1972,6 +1975,7 @@ mod tests {
                     background_effect: BackgroundEffectRule {
                         xray: None,
                         blur: None,
+                        blur_passes: None,
                         noise: None,
                         saturation: None,
                     },
@@ -1981,6 +1985,7 @@ mod tests {
                         background_effect: BackgroundEffectRule {
                             xray: None,
                             blur: None,
+                            blur_passes: None,
                             noise: None,
                             saturation: None,
                         },

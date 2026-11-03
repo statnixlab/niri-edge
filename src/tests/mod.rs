@@ -15,6 +15,7 @@ mod minimize_animation;
 mod minimize_capture;
 mod minimize_ipc;
 mod remove_output;
+mod titlebar_column;
 mod transactions;
 mod virtual_pointer;
 mod window_opening;

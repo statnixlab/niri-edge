@@ -39,7 +39,7 @@ use tracing::field::Empty;
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
 use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
-use crate::layout::ActivateWindow;
+use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
 use crate::utils::{
@@ -499,7 +499,26 @@ impl XdgShellHandler for State {
             mapped.set_needs_configure();
 
             let window = mapped.window.clone();
-            self.niri.layout.set_maximized(&window, true);
+            let is_maximized = mapped.pending_sizing_mode().is_maximized();
+            let is_floating = self
+                .niri
+                .layout
+                .workspaces()
+                .any(|(_, _, ws)| ws.is_floating(&window));
+            if self.niri.config.borrow().layout.client_maximize_to_column
+                && !is_floating
+                && !is_maximized
+            {
+                // CSD double-click and maximize buttons send the same request. A full-width
+                // column deliberately does not advertise Maximized, so the next click sends
+                // set_maximized again and toggles back, just like maximize-column.
+                self.niri.layout.toggle_full_width_for_window(&window);
+            } else {
+                // Floating windows have no column to expand. Use native maximization,
+                // which also remembers their floating size/position for unmaximize.
+                // Keep repeated maximize requests idempotent once maximized.
+                self.niri.layout.set_maximized(&window, true);
+            }
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             match &mut unmapped.state {
                 InitialConfigureState::NotConfigured {

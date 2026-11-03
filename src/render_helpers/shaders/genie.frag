@@ -57,7 +57,7 @@ float funnel_pull(float distance) {
 void main() {
     vec4 w = axis_rect(window_rect);
     vec4 t = axis_rect(target_rect);
-    // niri_size is the physical render quad; all animation rectangles are logical.
+    // niri_size is in physical pixels; the geometry uniforms are output-local logical units.
     vec2 point = to_axis(area_origin + niri_v_coords * (niri_size / niri_scale));
 
     float lead = smoothstep(0.0, 0.55, morph);

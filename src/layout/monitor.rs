@@ -1719,15 +1719,13 @@ impl<W: LayoutElement> Monitor<W> {
             )
         };
 
-        // Draw in passes for correct Z ordering during window movement between workspaces:
-        // - floating windows moving between workspaces
-        // - normal floating windows
-        // - scrolling windows moving between workspaces
-        // - normal scrolling windows
-        for pass in 0..4 {
+        // Per-workspace order: raised floats, scrolling windows, lowered floats.
+        // Each partition keeps the existing moving/normal passes so moves across
+        // workspaces retain their clipping and animation behavior.
+        for pass in 0..6 {
             // Don't cull when drawing windows moving between workspaces so that windows moving to
             // workspaces off-screen will still render.
-            let cull = matches!(pass, 1 | 3);
+            let cull = pass % 2 == 1;
 
             // Crop the elements to prevent them overflowing, currently visible during a workspace
             // switch.
@@ -1774,52 +1772,24 @@ impl<W: LayoutElement> Monitor<W> {
 
                 let xray_pos = XrayPos::new(geo.loc, zoom);
 
+                let layer = if pass % 2 == 0 {
+                    RenderLayer::MovingBetweenWorkspaces
+                } else {
+                    RenderLayer::Normal
+                };
                 match pass {
-                    0 => {
-                        ws.render_floating(
-                            ctx.r(),
-                            xray_pos,
-                            focus_ring,
-                            RenderLayer::MovingBetweenWorkspaces,
-                            push!(),
-                        );
+                    0 | 1 => {
+                        ws.render_floating(ctx.r(), xray_pos, focus_ring, layer, true, push!())
                     }
-                    1 => {
-                        ws.render_floating(
-                            ctx.r(),
-                            xray_pos,
-                            focus_ring,
-                            RenderLayer::Normal,
-                            push!(),
-                        );
-
-                        if let Some(loc) = insert_hint_render_loc {
-                            if loc.workspace == InsertWorkspace::Existing(ws.id()) {
-                                self.insert_hint_element.render(
-                                    ctx.renderer,
-                                    loc.location,
-                                    push!(),
-                                );
-                            }
+                    2 | 3 => ws.render_scrolling(ctx.r(), xray_pos, focus_ring, layer, push!()),
+                    _ => ws.render_floating(ctx.r(), xray_pos, focus_ring, layer, false, push!()),
+                }
+                if pass == 1 {
+                    if let Some(loc) = insert_hint_render_loc {
+                        if loc.workspace == InsertWorkspace::Existing(ws.id()) {
+                            self.insert_hint_element
+                                .render(ctx.renderer, loc.location, push!());
                         }
-                    }
-                    2 => {
-                        ws.render_scrolling(
-                            ctx.r(),
-                            xray_pos,
-                            focus_ring,
-                            RenderLayer::MovingBetweenWorkspaces,
-                            push!(),
-                        );
-                    }
-                    _ => {
-                        ws.render_scrolling(
-                            ctx.r(),
-                            xray_pos,
-                            focus_ring,
-                            RenderLayer::Normal,
-                            push!(),
-                        );
                     }
                 }
             }
