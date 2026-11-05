@@ -146,6 +146,7 @@ use crate::handlers::{configure_lock_surface, XDG_ACTIVATION_TOKEN_TIMEOUT};
 use crate::input::pick_color_grab::PickColorGrab;
 use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
+use crate::input::titlebar_click::TitlebarClicks;
 use crate::input::{
     apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_horizontal_wheel_binds,
     mods_with_mouse_binds, mods_with_tablet_stylus_binds, mods_with_vertical_wheel_binds,
@@ -369,6 +370,7 @@ pub struct Niri {
     pub pending_mouse_release_binds: HashMap<u32, Bind>,
     /// Same as `pending_release_binds`, but for tablet tool buttons, keyed by the button code.
     pub pending_tablet_release_binds: HashMap<u32, Bind>,
+    pub titlebar_clicks: TitlebarClicks,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
@@ -3189,6 +3191,7 @@ impl Niri {
             pending_release_binds: HashMap::new(),
             pending_mouse_release_binds: HashMap::new(),
             pending_tablet_release_binds: HashMap::new(),
+            titlebar_clicks: TitlebarClicks::default(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
             presentation_state,
