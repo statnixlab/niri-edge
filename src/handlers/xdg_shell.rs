@@ -500,15 +500,25 @@ impl XdgShellHandler for State {
 
             let window = mapped.window.clone();
             let is_maximized = mapped.pending_sizing_mode().is_maximized();
+            let mapped_id = mapped.id();
             let is_floating = self
                 .niri
                 .layout
                 .workspaces()
                 .any(|(_, _, ws)| ws.is_floating(&window));
-            if self.niri.config.borrow().layout.client_maximize_to_column
-                && !is_floating
-                && !is_maximized
-            {
+            let double_click = self
+                .niri
+                .titlebar_clicks
+                .take_double_click(mapped_id, get_monotonic_time());
+            let to_column = {
+                let config = self.niri.config.borrow();
+                if config.layout.titlebar_double_click_to_column {
+                    double_click
+                } else {
+                    config.layout.client_maximize_to_column && !is_maximized
+                }
+            };
+            if to_column && !is_floating {
                 // CSD double-click and maximize buttons send the same request. A full-width
                 // column deliberately does not advertise Maximized, so the next click sends
                 // set_maximized again and toggles back, just like maximize-column.
@@ -600,7 +610,23 @@ impl XdgShellHandler for State {
             mapped.set_needs_configure();
 
             let window = mapped.window.clone();
-            self.niri.layout.set_maximized(&window, false);
+            let double_click = self
+                .niri
+                .titlebar_clicks
+                .take_double_click(mapped.id(), get_monotonic_time());
+            let to_column = self
+                .niri
+                .config
+                .borrow()
+                .layout
+                .titlebar_double_click_to_column
+                && double_click
+                && !mapped.is_floating();
+            if to_column {
+                self.niri.layout.toggle_full_width_for_window(&window);
+            } else {
+                self.niri.layout.set_maximized(&window, false);
+            }
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             match &mut unmapped.state {
                 InitialConfigureState::NotConfigured {
