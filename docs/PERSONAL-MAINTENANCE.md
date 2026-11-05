@@ -4,7 +4,11 @@ This complete source branch belongs to `cachyos` (RTX 4070 SUPER), independently
 of the AMD laptop. It starts at niri-edge commit
 `b2aaeb3c619610827577e4fbbb3225ce88d19baa` and contains the desktop's existing
 local modifications as ordinary Git commits. It is not a merge of the AMD
-machine branch, and does not include that machine's new double-click behavior.
+machine branch. On 2026-11-04, the titlebar double-click change was ported
+individually from AMD commit `599ad91ca34a556db8702d780e93621effda0c7f`.
+Enable `layout { titlebar-double-click-to-column; }` to keep double-click column
+sizing while maximize buttons use native maximization. The NVIDIA Smithay
+dependency and display workarounds remain unchanged.
 
 ## Source repositories
 

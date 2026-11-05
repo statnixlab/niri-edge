@@ -20,6 +20,8 @@ pub struct Layout {
     pub center_focused_column: CenterFocusedColumn,
     pub always_center_single_column: bool,
     pub client_maximize_to_column: bool,
+    /// Route pointer double-click maximize requests to column maximization.
+    pub titlebar_double_click_to_column: bool,
     /// Lower floating windows behind the tiling layer when it receives focus.
     pub floating_windows_follow_focus: bool,
     pub empty_workspace_above_first: bool,
@@ -46,6 +48,7 @@ impl Default for Layout {
             center_focused_column: CenterFocusedColumn::Never,
             always_center_single_column: false,
             client_maximize_to_column: false,
+            titlebar_double_click_to_column: false,
             floating_windows_follow_focus: false,
             empty_workspace_above_first: false,
             default_column_display: ColumnDisplay::Normal,
@@ -72,6 +75,7 @@ impl MergeWith<LayoutPart> for Layout {
             insert_hint,
             always_center_single_column,
             client_maximize_to_column,
+            titlebar_double_click_to_column,
             floating_windows_follow_focus,
             empty_workspace_above_first,
             gaps,
@@ -125,6 +129,8 @@ pub struct LayoutPart {
     pub always_center_single_column: Option<Flag>,
     #[knuffel(child)]
     pub client_maximize_to_column: Option<Flag>,
+    #[knuffel(child)]
+    pub titlebar_double_click_to_column: Option<Flag>,
     #[knuffel(child)]
     pub floating_windows_follow_focus: Option<Flag>,
     #[knuffel(child)]

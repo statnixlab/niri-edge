@@ -65,6 +65,7 @@ pub mod scroll_swipe_gesture;
 pub mod scroll_tracker;
 pub mod spatial_movement_grab;
 pub mod swipe_tracker;
+pub mod titlebar_click;
 pub mod touch_overview_grab;
 
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
@@ -419,6 +420,7 @@ impl State {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time(&event);
         let pressed = event.state() == KeyState::Pressed;
+        self.niri.titlebar_clicks.clear();
 
         // Stop bind key repeat on any release. This won't work 100% correctly in cases like:
         // 1. Press Mod
@@ -2679,6 +2681,7 @@ impl State {
         self.niri.handle_focus_follows_mouse(&under);
 
         self.niri.pointer_contents.clone_from(&under);
+        self.niri.titlebar_clicks.motion(new_pos);
 
         pointer.motion(
             self,
@@ -2780,6 +2783,7 @@ impl State {
         self.niri.handle_focus_follows_mouse(&under);
 
         self.niri.pointer_contents.clone_from(&under);
+        self.niri.titlebar_clicks.motion(pos);
 
         pointer.motion(
             self,
@@ -2844,6 +2848,18 @@ impl State {
         let button_code = event.button_code();
 
         let button_state = event.state();
+        let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+        let track_titlebar = self
+            .niri
+            .config
+            .borrow()
+            .layout
+            .titlebar_double_click_to_column
+            && button == Some(MouseButton::Left)
+            && !(mods.ctrl || mods.alt || mods.shift || mods.logo);
+        if !track_titlebar {
+            self.niri.titlebar_clicks.clear();
+        }
 
         let mod_key = self.backend.mod_key(&self.niri.config.borrow());
 
@@ -3143,6 +3159,35 @@ impl State {
                     self.confirm_screenshot(true);
                 } else {
                     self.niri.queue_redraw_all();
+                }
+            }
+        }
+
+        if track_titlebar {
+            let position = pointer.current_location();
+            if button_state == ButtonState::Released {
+                self.niri.titlebar_clicks.release(position);
+            } else {
+                let window = (!pointer.is_grabbed()
+                    && !self.niri.is_locked()
+                    && !self.niri.screenshot_ui.is_open()
+                    && !self.niri.window_mru_ui.is_open()
+                    && !self.niri.layout.is_overview_open())
+                .then(|| pointer.current_focus())
+                .flatten()
+                .and_then(|surface| {
+                    let root = self.niri.find_root_shell_surface(&surface);
+                    self.niri
+                        .layout
+                        .find_window_and_output(&root)
+                        .map(|(window, _)| window.id())
+                });
+                if let Some(window) = window {
+                    self.niri
+                        .titlebar_clicks
+                        .press(window, position, get_monotonic_time());
+                } else {
+                    self.niri.titlebar_clicks.clear();
                 }
             }
         }

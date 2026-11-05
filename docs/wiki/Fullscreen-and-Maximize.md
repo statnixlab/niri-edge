@@ -97,3 +97,24 @@ maximize requests on an already maximized window leave it maximized.
 Initial window maximize requests, explicit
 `maximize-window-to-edges`, and fullscreen behavior are unchanged. The option is
 off by default.
+
+## Personal option: double-click uses column width, button uses screen edges
+
+`layout { titlebar-double-click-to-column; }` sends a tiled window's titlebar
+double-click to `maximize-column`, while its maximize/restore button keeps native
+maximization to the screen edges. It takes precedence over
+`client-maximize-to-column` if both options are enabled, and is off by default.
+
+The client protocol does not identify which widget sent the request. Niri
+correlates it with two unmodified left clicks on the same window, within 400 ms
+and 6 logical pixels, with a release between them. Every maximize or unmaximize
+request consumes the click sequence, so quickly clicking the maximize button
+twice still maximizes and restores normally. Dragging, keyboard input, unrelated
+buttons and clicks on another window invalidate the gesture. Requests arriving
+more than 400 ms after the second press use native maximization.
+
+This applies to pointer-driven client titlebars that issue a maximize request on
+double-click. Touch/tablet gestures and programmatic requests keep native
+behavior. Floating windows also keep native maximization because they have no
+column. A client that uses a longer double-click interval or delays its request
+beyond the matching interval falls back to native maximization.
