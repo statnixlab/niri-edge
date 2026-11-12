@@ -52,7 +52,7 @@ pub struct FloatingSpace<W: LayoutElement> {
     interactive_resize: Option<InteractiveResize<W>>,
 
     /// Windows in the closing animation.
-    closing_windows: Vec<ClosingWindow>,
+    closing_windows: Vec<(ClosingWindow, bool)>,
 
     /// View size for this space.
     view_size: Size<f64, Logical>,
@@ -80,6 +80,8 @@ niri_render_elements! {
 /// Extra per-tile data.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Data {
+    /// This window is above the scrolling layer until it is explicitly lowered.
+    above_tiling: bool,
     /// Position relative to the working area.
     pos: Point<f64, SizeFrac>,
 
@@ -102,6 +104,7 @@ impl Data {
         logical_pos: Point<f64, Logical>,
     ) -> Self {
         let mut rv = Self {
+            above_tiling: true,
             pos: Point::default(),
             logical_pos: Point::default(),
             size: Size::default(),
@@ -252,7 +255,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.advance_animations();
         }
 
-        self.closing_windows.retain_mut(|closing| {
+        self.closing_windows.retain_mut(|(closing, _)| {
             closing.advance_animations();
             closing.are_animations_ongoing()
         });
@@ -418,6 +421,39 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.tiles.is_empty()
     }
 
+    pub fn lower_all(&mut self) {
+        if self.options.layout.floating_windows_follow_focus {
+            for data in &mut self.data {
+                data.above_tiling = false;
+            }
+        }
+    }
+
+    pub fn is_above_tiling(&self, id: &W::Id) -> bool {
+        self.idx_of(id).is_some_and(|idx| {
+            !self.options.layout.floating_windows_follow_focus || self.data[idx].above_tiling
+        })
+    }
+
+    pub fn raise_active(&mut self) {
+        if let Some(id) = self.active_window_id.clone() {
+            self.activate_window(&id);
+        }
+    }
+
+    pub fn tiles_with_render_positions_in_layer(
+        &self,
+        above_tiling: bool,
+    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> {
+        self.tiles_with_render_positions()
+            .zip(&self.data)
+            .filter(move |(_, data)| {
+                (!self.options.layout.floating_windows_follow_focus || data.above_tiling)
+                    == above_tiling
+            })
+            .map(|(tile, _)| tile)
+    }
+
     pub fn add_tile(&mut self, tile: Tile<W>, activate: bool) {
         self.add_tile_at(0, tile, activate);
     }
@@ -504,9 +540,13 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         // Now, descendants is in back-to-front order, and repositioning them in the front-to-back
         // order will preserve the subsequent indices and work out right.
+        let above_tiling = self.data[idx].above_tiling;
         let mut idx = idx;
         #[allow(clippy::explicit_counter_loop)]
         for descendant_idx in descendants.into_iter().rev() {
+            if above_tiling {
+                self.data[descendant_idx].above_tiling = true;
+            }
             self.raise_window(descendant_idx, idx);
             idx += 1;
         }
@@ -557,6 +597,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         id: &W::Id,
         blocker: TransactionBlocker,
     ) {
+        let above_tiling = self.is_above_tiling(id);
         let (tile, tile_pos) = self
             .tiles_with_render_positions_mut(false)
             .find(|(tile, _)| tile.window().id() == id)
@@ -568,7 +609,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let tile_size = tile.tile_size();
 
-        self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+        self.start_close_animation_in_layer(
+            renderer,
+            snapshot,
+            tile_size,
+            tile_pos,
+            blocker,
+            above_tiling,
+        );
     }
 
     pub fn activate_window_without_raising(&mut self, id: &W::Id) -> bool {
@@ -585,6 +633,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
+        self.data[idx].above_tiling = true;
         self.raise_window(idx, 0);
         self.active_window_id = Some(id.clone());
         self.bring_up_descendants_of(0);
@@ -609,6 +658,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tile_pos: Point<f64, Logical>,
         blocker: TransactionBlocker,
     ) {
+        self.start_close_animation_in_layer(renderer, snapshot, tile_size, tile_pos, blocker, true);
+    }
+
+    fn start_close_animation_in_layer(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        snapshot: TileRenderSnapshot,
+        tile_size: Size<f64, Logical>,
+        tile_pos: Point<f64, Logical>,
+        blocker: TransactionBlocker,
+        above_tiling: bool,
+    ) {
         let anim = Animation::new(
             self.clock.clone(),
             0.,
@@ -629,7 +690,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         );
         match res {
             Ok(closing) => {
-                self.closing_windows.push(closing);
+                self.closing_windows.push((closing, above_tiling));
             }
             Err(err) => {
                 warn!("error creating a closing window animation: {err:?}");
@@ -1072,22 +1133,26 @@ impl<W: LayoutElement> FloatingSpace<W> {
         view_rect: Rectangle<f64, Logical>,
         focus_ring: bool,
         layer: RenderLayer,
+        above_tiling: bool,
         push: &mut dyn FnMut(FloatingSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
 
-        // Draw the closing windows on top of the other windows.
+        // Draw closing windows on top within their original above/below partition.
         //
         // FIXME: I guess this should rather preserve the stacking order when the window is closed.
         if layer.is_normal() {
-            for closing in self.closing_windows.iter().rev() {
+            for (closing, raised) in self.closing_windows.iter().rev() {
+                if (!self.options.layout.floating_windows_follow_focus || *raised) != above_tiling {
+                    continue;
+                }
                 let elem = closing.render(ctx.as_gles(), view_rect, scale);
                 push(elem.into());
             }
         }
 
         let active = self.active_window_id.clone();
-        for (tile, tile_pos) in self.tiles_with_render_positions() {
+        for (tile, tile_pos) in self.tiles_with_render_positions_in_layer(above_tiling) {
             // Skip tiles belonging to a different render layer.
             if layer.is_normal() == tile.is_moving_between_workspaces() {
                 continue;

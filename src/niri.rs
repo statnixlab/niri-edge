@@ -7806,6 +7806,7 @@ niri_render_elements! {
 
 niri_render_elements! {
     OutputRenderElements<R> => {
+        ExtraDamage = crate::render_helpers::damage::ExtraDamage,
         Monitor = MonitorRenderElement<R>,
         RescaledTile = RescaleRenderElement<TileRenderElement<R>>,
         LayerSurface = LayerSurfaceRenderElement<R>,

@@ -68,3 +68,54 @@ impl<R: Renderer> RenderElement<R> for ExtraDamage {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::renderer::damage::OutputDamageTracker;
+    use smithay::backend::renderer::element::Kind;
+    use smithay::backend::renderer::gles::GlesRenderer;
+    use smithay::utils::Transform;
+
+    use super::*;
+    use crate::niri::OutputRenderElements;
+    use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
+
+    #[test]
+    fn full_output_marker_repaints_unchanged_opaque_content() {
+        for (mode_size, scale, transform) in [
+            ((3840, 2160), 2., Transform::Normal),
+            ((800, 600), 1.25, Transform::_90),
+        ] {
+            let mode_size: Size<i32, Physical> = mode_size.into();
+            let output_rect = Rectangle::from_size(transform.transform_size(mode_size));
+            let logical_rect = output_rect.to_f64().to_logical(scale);
+            let background = SolidColorBuffer::new(logical_rect.size, [0.1, 0.2, 0.3, 1.]);
+            let background =
+                SolidColorRenderElement::from_buffer(&background, (0., 0.), 1., Kind::Unspecified);
+            let normal = [OutputRenderElements::<GlesRenderer>::SolidColor(
+                background.clone(),
+            )];
+            let mut tracker = OutputDamageTracker::new(mode_size, scale, transform);
+
+            // Establish an unchanged opaque scene with an otherwise reusable buffer.
+            tracker.damage_output(1, &normal).unwrap();
+            assert!(tracker.damage_output(1, &normal).unwrap().0.is_none());
+
+            let mut marker = ExtraDamage::new();
+            for _ in 0..2 {
+                marker.damage_all();
+                let elements = [
+                    OutputRenderElements::<GlesRenderer>::ExtraDamage(marker.render(logical_rect)),
+                    OutputRenderElements::SolidColor(background.clone()),
+                ];
+                let (damage, _) = tracker.damage_output(1, &elements).unwrap();
+                assert_eq!(damage.map(Vec::as_slice), Some([output_rect].as_slice()));
+            }
+
+            // Removing the marker can damage the removal frame, but subsequent unchanged
+            // frames must return to ordinary damage tracking.
+            tracker.damage_output(1, &normal).unwrap();
+            assert!(tracker.damage_output(1, &normal).unwrap().0.is_none());
+        }
+    }
+}

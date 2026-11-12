@@ -33,6 +33,7 @@ pub struct BackgroundEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Options {
     pub blur: bool,
+    pub blur_passes: Option<u8>,
     pub xray: bool,
     pub noise: Option<f64>,
     pub saturation: Option<f64>,
@@ -123,6 +124,7 @@ impl BackgroundEffect {
 
         let mut options = Options {
             blur,
+            blur_passes: effect.blur_passes,
             xray: effect.xray == Some(true),
             noise: effect.noise,
             saturation: effect.saturation,
@@ -170,7 +172,13 @@ impl BackgroundEffect {
         // Use noise/saturation from options, falling back to blur defaults if blurred, and
         // to no effect if not blurred.
         let blur = self.options.blur && !self.blur_config.off;
-        let blur_options = blur.then_some(BlurOptions::from(self.blur_config));
+        let blur_options = blur.then(|| {
+            let mut options = BlurOptions::from(self.blur_config);
+            if let Some(passes) = self.options.blur_passes {
+                options.passes = passes;
+            }
+            options
+        });
         let noise = if blur { self.blur_config.noise } else { 0. };
         let noise = self.options.noise.unwrap_or(noise) as f32;
         let saturation = if blur {

@@ -85,3 +85,19 @@ They can be implemented as the need arises.
 - Cursor and drag-and-drop icon.
 The main challenge here will be screencasts where the cursor is rendered separately.
 This is problematic because non-xray effects require rendering the whole scene in one go rather than separately.
+
+### Independent application blur strength (desktop fork)
+
+For non-xray effects, `background-effect { blur true; xray false; blur-passes 3; }`
+overrides the global blur pass count for that window or layer surface. Omit
+`blur-passes` to inherit the global setting. The renderer clamps passes to 1–31.
+This works with window/layer rules and their popup rules; changing a rule damages
+the effect so its cached contents are redrawn.
+
+Xray uses shared wallpaper buffers and keeps the global blur strength. Clavis
+uses the global strength for panels (including wallpaper-only blur), and a
+non-xray override for application windows. Its own settings windows are excluded
+from application rules. `blur { off; }` still disables all blur.
+
+IPC `Capabilities.per_surface_blur` indicates support in the running compositor;
+a newly installed executable does not enable this in an already running session.

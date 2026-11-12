@@ -646,6 +646,45 @@ mod tests {
         assert_eq!(config.input.keyboard.repeat_rate, 25);
     }
 
+    #[test]
+    fn parse_prefer_16bit_output() {
+        assert!(!do_parse("").debug.prefer_16bit_output);
+
+        let config = do_parse("debug { prefer-16bit-output; disable-10bit-output; }");
+        assert!(config.debug.prefer_16bit_output);
+        assert!(config.debug.disable_10bit_output);
+    }
+
+    #[test]
+    fn parse_force_full_repaint() {
+        assert!(!do_parse("").debug.force_full_repaint);
+        assert!(!do_parse("").debug.full_repaint_reuse_buffers);
+
+        let config = do_parse("debug { force-full-repaint; prefer-16bit-output; }");
+        assert!(config.debug.force_full_repaint);
+        assert!(config.debug.prefer_16bit_output);
+    }
+
+    #[test]
+    fn parse_full_repaint_reuse_buffers() {
+        let config = do_parse("debug { full-repaint-reuse-buffers; }");
+        assert!(config.debug.full_repaint_reuse_buffers);
+        assert!(!config.debug.force_full_repaint);
+
+        let config = do_parse("debug { force-full-repaint; full-repaint-reuse-buffers; }");
+        assert!(config.debug.force_full_repaint);
+        assert!(config.debug.full_repaint_reuse_buffers);
+    }
+
+    #[test]
+    fn parse_high_refresh_workaround_threshold() {
+        assert_eq!(do_parse("").debug.high_refresh_workaround_above, None);
+        let config = do_parse("debug { high-refresh-workaround-above 144; }");
+        assert_eq!(config.debug.high_refresh_workaround_above, Some(144));
+        assert!(Config::parse_mem("debug { high-refresh-workaround-above -1; }").is_err());
+        assert!(Config::parse_mem("debug { high-refresh-workaround-above 144.5; }").is_err());
+    }
+
     #[track_caller]
     fn do_parse(text: &str) -> Config {
         Config::parse_mem(text)
@@ -1965,6 +2004,7 @@ mod tests {
                 ],
                 center_focused_column: OnOverflow,
                 always_center_single_column: false,
+                client_maximize_to_column: false,
                 empty_workspace_above_first: false,
                 default_column_display: Tabbed,
                 gaps: 8.0,
@@ -2410,6 +2450,7 @@ mod tests {
                     background_effect: BackgroundEffectRule {
                         xray: None,
                         blur: None,
+                        blur_passes: None,
                         noise: None,
                         saturation: None,
                     },
@@ -2419,6 +2460,7 @@ mod tests {
                         background_effect: BackgroundEffectRule {
                             xray: None,
                             blur: None,
+                            blur_passes: None,
                             noise: None,
                             saturation: None,
                         },
@@ -2462,6 +2504,7 @@ mod tests {
                     background_effect: BackgroundEffectRule {
                         xray: None,
                         blur: None,
+                        blur_passes: None,
                         noise: None,
                         saturation: None,
                     },
@@ -2471,6 +2514,7 @@ mod tests {
                         background_effect: BackgroundEffectRule {
                             xray: None,
                             blur: None,
+                            blur_passes: None,
                             noise: None,
                             saturation: None,
                         },
@@ -2854,6 +2898,10 @@ mod tests {
                 preview_render: None,
                 dbus_interfaces_in_non_session_instances: false,
                 wait_for_frame_completion_before_queueing: false,
+                force_full_repaint: false,
+                full_repaint_reuse_buffers: false,
+                keep_previous_frame_buffer: false,
+                high_refresh_workaround_above: None,
                 enable_overlay_planes: false,
                 disable_cursor_plane: false,
                 disable_direct_scanout: false,
@@ -2879,6 +2927,7 @@ mod tests {
                 skip_cursor_only_updates_during_vrr: false,
                 disable_10bit_output: false,
                 nested_show_host_cursor: false,
+                prefer_16bit_output: false,
             },
             workspaces: [
                 Workspace {

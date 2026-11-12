@@ -16,6 +16,7 @@ use super::*;
 mod animations;
 mod fullscreen;
 mod minimized;
+mod floating_stacking;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {
