@@ -1169,6 +1169,67 @@ fn egl_genie_first_frame_preserves_texture_padding_when_overlapping_dock() {
 }
 
 #[test]
+fn egl_genie_first_frame_stays_at_window_position_on_hidpi_output() {
+    let mut f = setup_with_timing(
+        "output \"headless-1\" { scale 2; }\nwindow-rule { open-floating true; }",
+        "genie",
+        "",
+    );
+    let client = f.add_client();
+    let (_, id) = window(&mut f, client, [u32::MAX, 0, 0]);
+    let win = f.niri().find_window_by_id(id).unwrap();
+    f.niri().layout.move_floating_window(
+        Some(&win),
+        niri_ipc::PositionChange::SetFixed(50.),
+        niri_ipc::PositionChange::SetFixed(40.),
+        false,
+    );
+    f.niri_complete_animations();
+    set_time(f.niri(), Duration::ZERO);
+    let output = f.niri_output(1);
+    let owner = Rc::new(());
+    f.niri().layout.set_window_animation_targets(
+        &owner,
+        vec![AnimationTarget {
+            id: win,
+            output: output.clone(),
+            rect: Rectangle::new((320., 250.).into(), (32., 32.).into()),
+            edge: DockEdge::Bottom,
+            layer: None,
+        }],
+    );
+    let before = pixels(&mut f, &output, RenderTarget::Output);
+    assert!(red_pixels(&mut f, &output, RenderTarget::Output) > 1000);
+    assert!(f.niri_state().minimize_window(Some(id)));
+    let first = pixels(&mut f, &output, RenderTarget::Output);
+    assert!(
+        before
+            .chunks_exact(4)
+            .map(is_red)
+            .eq(first.chunks_exact(4).map(is_red)),
+        "Genie moved the first frame away from the window on a 2x output"
+    );
+
+    f.niri_complete_animations();
+    let start = f.niri().clock.now();
+    assert!(f.niri_state().restore_window(Some(id), None, true));
+    set_time(f.niri(), start + Duration::from_millis(150));
+    f.niri().advance_animations();
+    let restoring = pixels(&mut f, &output, RenderTarget::Output);
+    let width =
+        (output_size(&output).w * output.current_scale().fractional_scale()).round() as usize;
+    let near_icon = restoring
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(index, pixel)| is_red(pixel) && index % width >= 560 && index / width >= 400)
+        .count();
+    assert!(
+        near_icon > 100,
+        "Genie restore did not start near the Dock icon"
+    );
+}
+
+#[test]
 fn egl_genie_scaled_output_keeps_snapshot_in_logical_coordinates() {
     for scale in [1., 1.25, 1.5, 2.] {
         let mut f = setup_with_effect(

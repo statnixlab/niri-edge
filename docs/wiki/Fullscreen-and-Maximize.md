@@ -79,3 +79,21 @@ See also windowed fullscreen on the [screencasting features wiki page](./Screenc
 
 [struts]: ./Configuration:-Layout.md#struts
 [gaps]: ./Configuration:-Layout.md#gaps
+
+## Personal option: titlebar uses column width
+
+The local `layout { client-maximize-to-column; }` option routes maximize requests
+from already mapped tiled application windows to the same column-width toggle as
+`maximize-column`. It targets the requesting window, even if another window has
+focus. It preserves reserved panel space, layout gaps and borders. Repeating the
+titlebar gesture restores the previous column width.
+
+Double-clicking the client titlebar and pressing its maximize button send the
+same Wayland request, so both follow this option. Full-width columns do not
+advertise the protocol Maximized state; subsequent clicks send another maximize
+request and toggle the width back. Floating windows use native maximization and
+return to their previous floating size and position when restored. Repeated
+maximize requests on an already maximized window leave it maximized.
+Initial window maximize requests, explicit
+`maximize-window-to-edges`, and fullscreen behavior are unchanged. The option is
+off by default.
