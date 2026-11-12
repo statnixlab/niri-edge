@@ -157,7 +157,8 @@ use crate::layer::MappedLayer;
 use crate::layout::tile::TileRenderElement;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
-    HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
+    ActivateWindow, HitType, Layout, LayoutElement as _, LayoutElementRenderElement,
+    MonitorRenderElement,
 };
 use crate::niri_render_elements;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
@@ -933,6 +934,12 @@ impl State {
             use image_copy_capture_impl::{output_capture_constraints, window_capture_constraints};
 
             let source = s.session.source();
+            if image_copy_capture_impl::source_window_is_minimized(&self.niri, &source) {
+                if let Some(frame) = s.pending_frame.take() {
+                    frame.fail(CaptureFailureReason::Unknown);
+                }
+                return true;
+            }
 
             // This runs once per event loop iteration, and building the full
             // constraints is expensive. We only compare the size, so a change
@@ -1011,8 +1018,15 @@ impl State {
 
         // Cursor session constraints are refreshed in render_cursor_for_capture().
         let mut cursor_sessions = mem::take(&mut self.niri.image_copy_cursor_sessions);
-        cursor_sessions.retain(|s| {
+        cursor_sessions.retain_mut(|s| {
             let source = s.session.source();
+            if image_copy_capture_impl::source_window_is_minimized(&self.niri, &source) {
+                s.session.set_cursor_pos(None);
+                if let Some(frame) = s.pending_frame.take() {
+                    frame.fail(CaptureFailureReason::Unknown);
+                }
+                return true;
+            }
 
             if let Some(id) = image_copy_capture_impl::source_mapped_id(&source) {
                 self.niri.find_mapped_output_by_id(id).is_some()
@@ -1171,6 +1185,21 @@ impl State {
     /// Focus a specific window, taking care of a potential active output change and cursor
     /// warp.
     pub fn focus_window(&mut self, window: &Window) {
+        if self.niri.is_locked() {
+            return;
+        }
+        let minimized = self
+            .niri
+            .layout
+            .managed_windows()
+            .find(|(_, mapped)| &mapped.window == window)
+            .filter(|(_, mapped)| mapped.is_minimized())
+            .map(|(_, mapped)| mapped.id());
+        if let Some(id) = minimized {
+            if !self.restore_window(Some(id), None, true) {
+                return;
+            }
+        }
         let active_output = self.niri.layout.active_output().cloned();
 
         self.niri.layout.activate_window(window);
@@ -1186,6 +1215,215 @@ impl State {
 
         // FIXME: granular
         self.niri.queue_redraw_all();
+    }
+
+    /// Detach a live window without running the unmap or close lifecycle.
+    pub fn minimize_window(&mut self, id: Option<MappedId>) -> bool {
+        let Some(id) = id.or_else(|| self.niri.layout.focus().map(|mapped| mapped.id())) else {
+            return false;
+        };
+        let Some(window) = self.niri.find_window_by_id(id) else {
+            return false;
+        };
+        if self.niri.layout.is_minimized(&window) {
+            return false;
+        }
+        let surface = window
+            .toplevel()
+            .expect("no X11 support")
+            .wl_surface()
+            .clone();
+
+        // Compositor move/resize grabs can start without a client surface (for example,
+        // from a border or an overview tile). Match their window as well as implicit grabs.
+        let targets_window = |grab: &dyn std::any::Any| {
+            use crate::input::move_grab::MoveGrab;
+            use crate::input::resize_grab::ResizeGrab;
+            use crate::input::touch_overview_grab::TouchOverviewGrab;
+
+            grab.downcast_ref::<MoveGrab>()
+                .is_some_and(|grab| grab.window() == &window)
+                || grab
+                    .downcast_ref::<ResizeGrab>()
+                    .is_some_and(|grab| grab.window() == &window)
+                || grab
+                    .downcast_ref::<TouchOverviewGrab>()
+                    .is_some_and(|grab| grab.window() == Some(&window))
+        };
+        let time = InputTime::now();
+        // End grabs before detaching, while their normal cleanup can still find the tile.
+        let pointer = self.niri.seat.get_pointer().unwrap();
+        let pointer_grab = pointer.grab_start_data().and_then(|data| data.focus);
+        if pointer_grab
+            .is_some_and(|(focus, _)| self.niri.find_root_shell_surface(&focus) == surface)
+            || pointer
+                .with_grab(|_, grab| targets_window(grab.as_any()))
+                .unwrap_or(false)
+        {
+            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+        }
+        if let Some(touch) = self.niri.seat.get_touch() {
+            let target = touch.grab_start_data().and_then(|data| data.focus);
+            if target.is_some_and(|(focus, _)| self.niri.find_root_shell_surface(&focus) == surface)
+                || touch
+                    .with_grab(|_, grab| targets_window(grab.as_any()))
+                    .unwrap_or(false)
+            {
+                touch.cancel(self);
+                touch.unset_grab(self);
+            }
+        }
+        let mut tablet_tools = Vec::new();
+        for tool in self.niri.seat.tablet_seat().get_tools().into_values() {
+            let target = tool.grab_start_data().and_then(|data| data.focus);
+            let grabbed = target
+                .is_some_and(|(focus, _)| self.niri.find_root_shell_surface(&focus) == surface)
+                || tool
+                    .with_grab(|_, grab| targets_window(grab.as_any()))
+                    .unwrap_or(false);
+            let hovering = !tool.is_grabbed()
+                && tool.current_location().is_some_and(|location| {
+                    self.niri
+                        .contents_under(location)
+                        .surface
+                        .is_some_and(|(focus, _)| {
+                            self.niri.find_root_shell_surface(&focus) == surface
+                        })
+                });
+            if grabbed {
+                tool.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+            }
+            if grabbed || hovering {
+                tablet_tools.push(tool);
+            }
+        }
+        if self
+            .niri
+            .popup_grab
+            .as_ref()
+            .is_some_and(|grab| grab.root == surface)
+        {
+            let mut grab = self.niri.popup_grab.take().unwrap();
+            grab.grab.ungrab(PopupUngrabStrategy::All);
+            self.niri.seat.get_keyboard().unwrap().unset_grab(self);
+            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), InputTime::now());
+        }
+        let popups: Vec<_> = PopupManager::popups_for_surface(&surface).collect();
+        for (popup, _) in popups {
+            let _ = PopupManager::dismiss_popup(&surface, &popup);
+        }
+        self.niri.layout.interactive_resize_end(&window);
+        self.niri.layout.interactive_move_end(&window);
+        self.niri.layout.cancel_window_animation(&window);
+        let output = self
+            .niri
+            .layout
+            .find_window_and_output(&surface)
+            .and_then(|(_, o)| o.cloned());
+        let mut animation = None;
+        if !self.niri.is_locked() {
+            self.store_unmap_snapshot(&window, output.as_ref());
+            self.backend.with_primary_renderer(|renderer| {
+                animation = self
+                    .niri
+                    .layout
+                    .prepare_minimize_animation(renderer, &window, false);
+            });
+        }
+        if !self.niri.layout.minimize_window(&window) {
+            return false;
+        }
+
+        if let Some(animation) = animation {
+            self.niri.layout.start_minimize_animation(animation);
+        }
+        self.niri.window_mru_ui.remove_window(id);
+
+        // The detached surface no longer participates in output rendering, which normally
+        // clears this cache. Clear it now for idle inhibition and frame callback throttling.
+        window.with_surfaces(|_, states| {
+            if let Some(primary) = states.data_map.get::<Mutex<PrimaryScanoutOutput>>() {
+                *primary.lock().unwrap() = PrimaryScanoutOutput::default();
+            }
+        });
+        self.update_keyboard_focus();
+        self.update_pointer_contents();
+        pointer.frame(self);
+        // Refresh tablet focus immediately: a button event need not be preceded by motion.
+        for tool in tablet_tools {
+            if let Some(location) = tool.current_location() {
+                let under = self.niri.contents_under(location);
+                tool.motion(
+                    self,
+                    under.surface,
+                    &smithay::input::tablet::tool::MotionEvent {
+                        location,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time,
+                    },
+                );
+                tool.frame(self, time);
+            }
+        }
+        self.niri.queue_redraw_all();
+        true
+    }
+
+    /// Restore onto the target output's current workspace, preserving the live window.
+    pub fn restore_window(
+        &mut self,
+        id: Option<MappedId>,
+        output: Option<&Output>,
+        activate: bool,
+    ) -> bool {
+        if self.niri.is_locked() {
+            return false;
+        }
+        let window = match id {
+            Some(id) => {
+                let Some(window) = self.niri.find_window_by_id(id) else {
+                    return false;
+                };
+                Some(window)
+            }
+            None => None,
+        };
+        let activation = if activate {
+            ActivateWindow::Yes
+        } else {
+            ActivateWindow::No
+        };
+        let Some(restored) = self
+            .niri
+            .layout
+            .restore_window(window.as_ref(), output, activation)
+        else {
+            return false;
+        };
+        self.niri.layout.cancel_window_animation(&restored);
+        let surface = restored.toplevel().expect("no X11 support").wl_surface();
+        let output = self
+            .niri
+            .layout
+            .find_window_and_output(surface)
+            .and_then(|(_, o)| o.cloned());
+        self.store_unmap_snapshot(&restored, output.as_ref());
+        self.backend.with_primary_renderer(|renderer| {
+            if let Some(animation) = self
+                .niri
+                .layout
+                .prepare_minimize_animation(renderer, &restored, true)
+            {
+                self.niri.layout.start_minimize_animation(animation);
+            }
+        });
+        if activate {
+            self.niri.layer_shell_on_demand_focus = None;
+            self.update_keyboard_focus();
+            self.maybe_warp_cursor_to_focus();
+        }
+        self.niri.queue_redraw_all();
+        true
     }
 
     pub fn confirm_mru(&mut self) {
@@ -1465,7 +1703,9 @@ impl State {
                 surface: Some(surface),
             } = &self.niri.keyboard_focus
             {
-                if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
+                if let Some((mapped, _)) =
+                    self.niri.layout.find_managed_window_and_output_mut(surface)
+                {
                     mapped.set_is_focused(false);
                 }
             }
@@ -1473,7 +1713,9 @@ impl State {
                 surface: Some(surface),
             } = &focus
             {
-                if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
+                if let Some((mapped, _)) =
+                    self.niri.layout.find_managed_window_and_output_mut(surface)
+                {
                     mapped.set_is_focused(true);
 
                     // If `mapped` does not have a focus timestamp, then the window is newly
@@ -2514,7 +2756,7 @@ impl State {
             },
         );
 
-        self.niri.layout.with_windows(|mapped, _, _, _| {
+        self.niri.layout.with_managed_windows(|mapped, _, _, _| {
             let id = mapped.id().get();
             let props = with_toplevel_role(mapped.toplevel(), |role| {
                 gnome_shell_introspect::WindowProperties {
@@ -2624,7 +2866,11 @@ impl Niri {
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
             &display_handle,
-            [WmCapabilities::Fullscreen, WmCapabilities::Maximize],
+            [
+                WmCapabilities::Fullscreen,
+                WmCapabilities::Maximize,
+                WmCapabilities::Minimize,
+            ],
         );
         let xdg_decoration_state =
             XdgDecorationState::new_with_filter::<State, _>(&display_handle, |client| {
@@ -4014,7 +4260,7 @@ impl Niri {
 
     pub fn find_window_by_id(&self, id: MappedId) -> Option<Window> {
         self.layout
-            .windows()
+            .managed_windows()
             .find(|(_, m)| m.id() == id)
             .map(|(_, m)| m.window.clone())
     }
@@ -4480,7 +4726,7 @@ impl Niri {
         let _span = tracy_client::span!("Niri::refresh_window_states");
 
         let config = self.config.borrow();
-        self.layout.with_windows_mut(|mapped, _output| {
+        self.layout.with_managed_windows_mut(|mapped, _output| {
             mapped.update_tiled_state(config.prefer_no_csd);
         });
         drop(config);
@@ -4494,7 +4740,7 @@ impl Niri {
 
         let mut windows = vec![];
         let mut outputs = HashSet::new();
-        self.layout.with_windows_mut(|mapped, output| {
+        self.layout.with_managed_windows_mut(|mapped, output| {
             if mapped.recompute_window_rules_if_needed(window_rules, self.is_at_startup) {
                 windows.push(mapped.window.clone());
 
@@ -4522,6 +4768,9 @@ impl Niri {
     }
 
     pub fn advance_animations(&mut self) {
+        if self.is_locked() {
+            self.layout.cancel_minimize_animations();
+        }
         let _span = tracy_client::span!("Niri::advance_animations");
 
         self.layout.advance_animations();
@@ -4834,6 +5083,8 @@ impl Niri {
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
 
+            self.layout
+                .render_minimize_animations(output, ctx.target, &mut |elem| push(elem.into()));
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
@@ -4855,6 +5106,8 @@ impl Niri {
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
 
+            self.layout
+                .render_minimize_animations(output, ctx.target, &mut |elem| push(elem.into()));
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
             // Macro instead of closure to avoid borrowing push().
@@ -5616,7 +5869,7 @@ impl Niri {
 
         let frame_callback_time = get_monotonic_time();
 
-        self.layout.with_windows_mut(|mapped, _| {
+        self.layout.with_managed_windows_mut(|mapped, _| {
             mapped.send_frame(
                 output,
                 frame_callback_time,
@@ -6373,7 +6626,7 @@ impl Niri {
 
     pub fn refresh_mapped_cast_window_rules(&mut self) {
         // O(N^2) but should be fine since there aren't many casts usually.
-        self.layout.with_windows_mut(|mapped, _| {
+        self.layout.with_managed_windows_mut(|mapped, _| {
             let id = mapped.id();
 
             let mut value = false;
@@ -7375,7 +7628,7 @@ impl Niri {
             }
 
             let mut windows = vec![];
-            self.layout.with_windows_mut(|mapped, _| {
+            self.layout.with_managed_windows_mut(|mapped, _| {
                 if mapped.recompute_window_rules(window_rules, self.is_at_startup) {
                     windows.push(mapped.window.clone());
                 }
@@ -7577,6 +7830,7 @@ niri_render_elements! {
         WindowMruUi = WindowMruUiRenderElement<R>,
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
+        Minimize = crate::layout::minimize_animation::MinimizeAnimationRenderElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }

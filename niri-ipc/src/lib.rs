@@ -67,6 +67,14 @@ pub mod state;
 pub enum Request {
     /// Request the version string for the running niri instance.
     Version,
+    /// Request supported fork extensions without changing compositor state.
+    Capabilities,
+    /// Replace this connection's window animation targets. An empty list clears them.
+    /// Targets expire when this IPC connection closes; coordinates are output-local logical units.
+    SetWindowAnimationTargets {
+        /// Complete replacement for the hints owned by this connection (at most 1024).
+        targets: Vec<WindowAnimationTarget>,
+    },
     /// Request information about connected outputs.
     Outputs,
     /// Request information about workspaces.
@@ -139,6 +147,8 @@ pub enum Response {
     Handled,
     /// The version string for the running niri instance.
     Version(String),
+    /// Supported fork extensions.
+    Capabilities(Capabilities),
     /// Information about connected outputs.
     ///
     /// Map from output name to output info.
@@ -165,6 +175,53 @@ pub enum Response {
     OverviewState(Overview),
     /// Information about screencasts.
     Casts(Vec<Cast>),
+}
+
+/// Extensions supported by this niri fork.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct Capabilities {
+    /// Native window minimization, restoration, and [`Window::is_minimized`].
+    pub window_minimization: bool,
+    /// Shared minimize/restore scale animation and connection-owned target hints.
+    #[serde(default)]
+    pub window_minimization_animation: bool,
+    /// Supported values for `animations { window-minimize-effect "..."; }`.
+    #[serde(default)]
+    pub window_minimization_effects: Vec<String>,
+}
+
+/// Dock edge in the output's logical coordinate system, after output transform.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum DockEdge {
+    /// Left edge.
+    Left,
+    /// Right edge.
+    Right,
+    /// Top edge.
+    Top,
+    /// Bottom edge.
+    Bottom,
+}
+
+/// A window's visual representation on one output. Never matched by title or app ID.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct WindowAnimationTarget {
+    /// Live compositor window ID.
+    pub id: u64,
+    /// Output connector name.
+    pub output: String,
+    /// Logical rectangle: x, y, width, height. All values must be finite; sizes must be positive.
+    pub rect: [f64; 4],
+    /// Optional uniquely named layer surface on this output. If present, the rectangle is
+    /// surface-local and niri converts it using the compositor's actual layer placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_namespace: Option<String>,
+    /// Dock edge, used for directional fallbacks.
+    pub edge: DockEdge,
 }
 
 /// Overview information.
@@ -305,6 +362,21 @@ pub enum Action {
         /// If `None`, uses the focused window.
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
+    },
+    /// Minimize a window without closing it.
+    MinimizeWindow {
+        /// Id of the window to minimize; omit to use the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
+    /// Restore and focus a minimized window in the current workspace.
+    RestoreWindow {
+        /// Id of the window to restore; omit to restore the most recently minimized window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+        /// Restore to this output's current workspace instead of the active output.
+        #[cfg_attr(feature = "clap", arg(long))]
+        output: Option<String>,
     },
     /// Toggle fullscreen on a window.
     #[cfg_attr(
@@ -1520,6 +1592,12 @@ pub struct Window {
     ///
     /// If the window isn't floating then it is in the tiling layout.
     pub is_floating: bool,
+    /// Whether this window is minimized and absent from the visible layout.
+    ///
+    /// Minimized windows remain open and retain their id. They have no workspace or layout
+    /// position and are never focused.
+    #[serde(default)]
+    pub is_minimized: bool,
     /// Whether this window requests your attention.
     pub is_urgent: bool,
     /// Position- and size-related properties of the window.
@@ -2300,6 +2378,150 @@ fn default_position_change() -> PositionChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn window_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 42,
+            "title": "Document",
+            "app_id": "editor",
+            "pid": 1234,
+            "workspace_id": 7,
+            "is_focused": true,
+            "is_floating": false,
+            "is_urgent": false,
+            "layout": {
+                "pos_in_scrolling_layout": [1, 1],
+                "tile_size": [800.0, 600.0],
+                "window_size": [800, 600],
+                "tile_pos_in_workspace_view": [0.0, 0.0],
+                "window_offset_in_tile": [0.0, 0.0]
+            },
+            "focus_timestamp": null
+        })
+    }
+
+    #[test]
+    fn old_window_snapshot_defaults_to_not_minimized() {
+        let window: Window = serde_json::from_value(window_json()).unwrap();
+        assert!(!window.is_minimized);
+        assert_eq!(serde_json::to_value(window).unwrap()["is_minimized"], false);
+    }
+
+    #[test]
+    fn minimization_events_and_reconnected_snapshot_agree() {
+        use crate::state::{EventStreamStatePart, WindowsState};
+
+        let visible: Window = serde_json::from_value(window_json()).unwrap();
+        let mut minimized = visible.clone();
+        minimized.is_minimized = true;
+        minimized.is_focused = false;
+        minimized.workspace_id = None;
+        minimized.layout.pos_in_scrolling_layout = None;
+        minimized.layout.tile_pos_in_workspace_view = None;
+
+        let mut live = WindowsState::default();
+        live.apply(Event::WindowsChanged {
+            windows: vec![visible.clone()],
+        });
+        for window in [minimized.clone(), minimized, visible] {
+            // Cross the JSON wire so the test also covers event serialization.
+            let event = Event::WindowOpenedOrChanged {
+                window: window.clone(),
+            };
+            let wire = serde_json::to_vec(&event).unwrap();
+            live.apply(serde_json::from_slice(&wire).unwrap());
+            assert_eq!(live.windows.len(), 1);
+            assert_eq!(
+                serde_json::to_value(&live.windows[&42]).unwrap(),
+                serde_json::to_value(&window).unwrap()
+            );
+
+            let mut reconnected = WindowsState::default();
+            for event in live.replicate() {
+                reconnected.apply(event);
+            }
+            assert_eq!(
+                serde_json::to_value(&live.windows).unwrap(),
+                serde_json::to_value(&reconnected.windows).unwrap()
+            );
+        }
+        live.apply(Event::WindowClosed { id: 42 });
+        assert!(live.windows.is_empty());
+    }
+
+    #[test]
+    fn minimization_request_wire_format() {
+        let legacy: Capabilities =
+            serde_json::from_value(serde_json::json!({"window_minimization": true})).unwrap();
+        assert!(!legacy.window_minimization_animation);
+        for (request, wire) in [
+            (Request::Capabilities, serde_json::json!("Capabilities")),
+            (
+                Request::Action(Action::MinimizeWindow { id: None }),
+                serde_json::json!({"Action": {"MinimizeWindow": {"id": null}}}),
+            ),
+            (
+                Request::Action(Action::RestoreWindow {
+                    id: Some(42),
+                    output: Some("DP-1".into()),
+                }),
+                serde_json::json!({"Action": {"RestoreWindow": {"id": 42, "output": "DP-1"}}}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(request).unwrap(), wire);
+            let decoded: Request = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
+        }
+        let response = Response::Capabilities(Capabilities {
+            window_minimization: true,
+            window_minimization_animation: true,
+            window_minimization_effects: vec!["scale".into(), "genie".into()],
+        });
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({"Capabilities": {"window_minimization": true, "window_minimization_animation": true, "window_minimization_effects": ["scale", "genie"]}})
+        );
+    }
+
+    #[cfg(feature = "clap")]
+    #[test]
+    fn minimization_cli_arguments() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            action: Action,
+        }
+
+        for (args, expected) in [
+            (
+                vec!["niri", "minimize-window"],
+                serde_json::json!({"MinimizeWindow": {"id": null}}),
+            ),
+            (
+                vec!["niri", "minimize-window", "--id", "42"],
+                serde_json::json!({"MinimizeWindow": {"id": 42}}),
+            ),
+            (
+                vec!["niri", "restore-window"],
+                serde_json::json!({"RestoreWindow": {"id": null, "output": null}}),
+            ),
+            (
+                vec!["niri", "restore-window", "--id", "42", "--output", "DP-1"],
+                serde_json::json!({"RestoreWindow": {"id": 42, "output": "DP-1"}}),
+            ),
+            (
+                vec!["niri", "restore-window", "--output", "DP-1"],
+                serde_json::json!({"RestoreWindow": {"id": null, "output": "DP-1"}}),
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(serde_json::to_value(cli.action).unwrap(), expected);
+        }
+        assert!(Cli::try_parse_from(["niri", "minimize-window", "--id", "invalid"]).is_err());
+        assert!(Cli::try_parse_from(["niri", "restore-window", "--id", "-1"]).is_err());
+    }
 
     #[test]
     fn parse_size_change() {

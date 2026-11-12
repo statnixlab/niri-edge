@@ -16,6 +16,9 @@ pub struct Animations {
     pub workspace_switch: WorkspaceSwitchAnim,
     pub window_open: WindowOpenAnim,
     pub window_close: WindowCloseAnim,
+    /// None selects the effect's preset; any explicit block keeps its own parse defaults.
+    pub window_minimize: Option<WindowMinimizeAnim>,
+    pub window_minimize_effect: MinimizeEffect,
     pub horizontal_view_movement: HorizontalViewMovementAnim,
     pub window_movement: WindowMovementAnim,
     pub window_resize: WindowResizeAnim,
@@ -36,6 +39,8 @@ impl Default for Animations {
             window_movement: Default::default(),
             window_open: Default::default(),
             window_close: Default::default(),
+            window_minimize: Default::default(),
+            window_minimize_effect: Default::default(),
             window_resize: Default::default(),
             config_notification_open_close: Default::default(),
             exit_confirmation_open_close: Default::default(),
@@ -43,6 +48,22 @@ impl Default for Animations {
             overview_open_close: Default::default(),
             recent_windows_close: Default::default(),
         }
+    }
+}
+
+impl Animations {
+    pub fn window_minimize(&self) -> WindowMinimizeAnim {
+        self.window_minimize
+            .unwrap_or_else(|| match self.window_minimize_effect {
+                MinimizeEffect::Scale => WindowMinimizeAnim::default(),
+                MinimizeEffect::Genie => WindowMinimizeAnim(Animation {
+                    off: false,
+                    kind: Kind::Easing(EasingParams {
+                        duration_ms: 550,
+                        curve: Curve::Linear,
+                    }),
+                }),
+            })
     }
 }
 
@@ -60,6 +81,10 @@ pub struct AnimationsPart {
     pub window_open: Option<WindowOpenAnim>,
     #[knuffel(child)]
     pub window_close: Option<WindowCloseAnim>,
+    #[knuffel(child)]
+    pub window_minimize: Option<WindowMinimizeAnim>,
+    #[knuffel(child, unwrap(argument))]
+    pub window_minimize_effect: Option<MinimizeEffect>,
     #[knuffel(child)]
     pub horizontal_view_movement: Option<HorizontalViewMovementAnim>,
     #[knuffel(child)]
@@ -86,6 +111,7 @@ impl MergeWith<AnimationsPart> for Animations {
         }
 
         merge!((self, part), slowdown);
+        merge_clone_opt!((self, part), window_minimize);
 
         // Animation properties are fairly tied together, except maybe `off`. So let's just save
         // ourselves the work and not merge within individual animations.
@@ -94,6 +120,7 @@ impl MergeWith<AnimationsPart> for Animations {
             workspace_switch,
             window_open,
             window_close,
+            window_minimize_effect,
             horizontal_view_movement,
             window_movement,
             window_resize,
@@ -905,5 +932,153 @@ where
             stiffness,
             epsilon,
         })
+    }
+}
+
+/// Fork extension used for both minimization and restoration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowMinimizeAnim(pub Animation);
+
+/// Visual effect only; kept separate so a shell's style fragment preserves timing and `off`.
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MinimizeEffect {
+    #[default]
+    Scale,
+    Genie,
+}
+
+impl Default for WindowMinimizeAnim {
+    fn default() -> Self {
+        Self(Animation {
+            off: false,
+            kind: Kind::Easing(EasingParams {
+                duration_ms: 280,
+                curve: Curve::EaseOutCubic,
+            }),
+        })
+    }
+}
+
+impl<S> knuffel::Decode<S> for WindowMinimizeAnim
+where
+    S: knuffel::traits::ErrorSpan,
+{
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        let default = Self::default().0;
+        Ok(Self(Animation::decode_node(node, ctx, default, |_, _| {
+            Ok(false)
+        })?))
+    }
+}
+
+#[cfg(test)]
+mod minimize_tests {
+    use super::*;
+
+    #[test]
+    fn effect_defaults_and_explicit_blocks_are_distinct() {
+        let scale = WindowMinimizeAnim::default();
+        let parse = |text: &str| crate::Config::parse_mem(text).unwrap().animations;
+        assert_eq!(parse("").window_minimize(), scale);
+        let genie = parse(r#"animations { window-minimize-effect "genie"; }"#);
+        assert_eq!(
+            genie.window_minimize().0.kind,
+            Kind::Easing(EasingParams {
+                duration_ms: 550,
+                curve: Curve::Linear
+            })
+        );
+        for block in ["", "duration-ms 280;", "curve \"ease-out-cubic\";"] {
+            let explicit = parse(&format!(
+                r#"animations {{ window-minimize-effect "genie"; window-minimize {{ {block} }}; }}"#
+            ));
+            assert_eq!(explicit.window_minimize(), scale);
+            assert!(explicit.window_minimize.is_some());
+        }
+        let off =
+            parse(r#"animations { window-minimize-effect "genie"; window-minimize { off; }; }"#);
+        assert!(off.window_minimize().0.off);
+    }
+
+    #[test]
+    fn style_only_includes_preserve_explicit_timing_and_override_order() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "niri-minimize-config-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let style = directory.join("style.kdl");
+        fs::write(&style, "animations { window-minimize-effect \"genie\"; }\n").unwrap();
+        let load = |text: &str| {
+            crate::Config::parse(&directory.join("main.kdl"), text)
+                .config
+                .unwrap()
+                .animations
+        };
+        let implicit = load("include \"style.kdl\"\n");
+        assert!(implicit.window_minimize.is_none());
+        assert_eq!(
+            implicit.window_minimize().0.kind,
+            Kind::Easing(EasingParams {
+                duration_ms: 550,
+                curve: Curve::Linear
+            })
+        );
+        let earlier = "animations { off; slowdown 2.0; window-minimize { duration-ms 650; curve \"linear\"; }; }\n";
+        let explicit = load(&format!("{earlier}include \"style.kdl\"\n"));
+        assert_eq!(
+            explicit.window_minimize().0.kind,
+            Kind::Easing(EasingParams {
+                duration_ms: 650,
+                curve: Curve::Linear
+            })
+        );
+        assert!(explicit.off);
+        assert_eq!(explicit.slowdown, 2.0);
+        // A later explicit block replaces the whole animation, as before; style cannot reset it.
+        fs::write(
+            directory.join("timing.kdl"),
+            "animations { window-minimize { off; }; }\n",
+        )
+        .unwrap();
+        let later = load(&format!(
+            "{earlier}include \"timing.kdl\"\ninclude \"style.kdl\"\n"
+        ));
+        assert!(later.window_minimize().0.off);
+        assert_eq!(
+            later.window_minimize().0.kind,
+            WindowMinimizeAnim::default().0.kind
+        );
+        // Switching back to Scale changes only the preset when timing is absent.
+        let back =
+            load("include \"style.kdl\"\nanimations { window-minimize-effect \"scale\"; }\n");
+        assert_eq!(back.window_minimize(), WindowMinimizeAnim::default());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn style_merge_preserves_timing_disable_and_other_animations() {
+        let mut animations = crate::Config::parse_mem(r#"
+            animations { off; window-minimize { duration-ms 650; curve "linear"; }; window-open { off; }; }
+        "#).unwrap().animations;
+        let before = animations.clone();
+        let part: AnimationsPart =
+            knuffel::parse("style.kdl", r#"window-minimize-effect "genie";"#).unwrap();
+        animations.merge_with(&part);
+        assert_eq!(animations.window_minimize_effect, MinimizeEffect::Genie);
+        assert_eq!(animations.window_minimize, before.window_minimize);
+        assert_eq!(animations.window_open, before.window_open);
+        assert!(animations.off);
+        assert!(
+            crate::Config::parse_mem(r#"animations { window-minimize-effect "unknown"; }"#)
+                .is_err()
+        );
     }
 }
