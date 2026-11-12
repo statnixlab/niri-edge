@@ -32,7 +32,7 @@ use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
 
 use crate::backend::IpcOutputMap;
-use crate::handlers::image_copy_capture::{source_mapped_id, source_output};
+use crate::handlers::image_copy_capture::{source_managed_window, source_output};
 use crate::input::pick_window_grab::PickWindowGrab;
 use crate::layout::workspace::WorkspaceId;
 use crate::niri::State;
@@ -52,7 +52,17 @@ pub struct IpcServer {
     event_stream_state: Rc<RefCell<EventStreamState>>,
 }
 
+impl Drop for ClientCtx {
+    fn drop(&mut self) {
+        let owner = self.animation_owner.clone();
+        self.event_loop.insert_idle(move |state| {
+            state.niri.layout.clear_window_animation_targets(&owner);
+        });
+    }
+}
+
 struct ClientCtx {
+    animation_owner: Rc<()>,
     event_loop: LoopHandle<'static, State>,
     scheduler: Scheduler<()>,
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
@@ -169,6 +179,7 @@ fn on_new_ipc_client(state: &mut State, stream: UnixStream) {
     let ipc_server = state.niri.ipc_server.as_ref().unwrap();
 
     let ctx = ClientCtx {
+        animation_owner: Rc::new(()),
         event_loop: state.niri.event_loop.clone(),
         scheduler: state.niri.scheduler.clone(),
         ipc_outputs: state.backend.ipc_outputs(),
@@ -274,6 +285,92 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
     let response = match request {
         Request::ReturnError => return Err(String::from("example compositor error")),
         Request::Version => Response::Version(version()),
+        Request::Capabilities => Response::Capabilities(niri_ipc::Capabilities {
+            window_minimization: true,
+            window_minimization_animation: true,
+            window_minimization_effects: vec!["scale".into(), "genie".into()],
+        }),
+        Request::SetWindowAnimationTargets { targets } => {
+            if targets.len() > 1024 {
+                return Err(String::from("too many window animation targets"));
+            }
+            let owner = ctx.animation_owner.clone();
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                let mut resolved = Vec::with_capacity(targets.len());
+                for target in targets {
+                    let Some(window) = state
+                        .niri
+                        .layout
+                        .managed_windows()
+                        .find(|(_, window)| window.id().get() == target.id)
+                        .map(|(_, window)| window.window.clone())
+                    else {
+                        // Windows may close between the shell snapshot and this request.
+                        continue;
+                    };
+                    let Some(output) = state
+                        .niri
+                        .global_space
+                        .outputs()
+                        .find(|output| output.name() == target.output)
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    let mut layer_surface = None;
+                    if let Some(namespace) = target.layer_namespace {
+                        let layers = layer_map_for_output(&output);
+                        let mut matches = layers
+                            .layers()
+                            .filter(|layer| layer.namespace() == namespace);
+                        let Some(layer) = matches.next() else {
+                            continue;
+                        };
+                        if !crate::utils::is_mapped(layer.layer_surface().wl_surface()) {
+                            continue;
+                        }
+                        // Never guess among multiple surfaces with the same name.
+                        if matches.next().is_some() {
+                            continue;
+                        }
+                        let Some(_) = layers.layer_geometry(layer) else {
+                            continue;
+                        };
+                        layer_surface = Some(layer.clone());
+                    }
+                    if crate::layout::minimize_animation::target_rect(
+                        target.rect,
+                        &output,
+                        target.edge,
+                    )
+                    .is_none()
+                    {
+                        let _ = tx
+                            .send_blocking(Err(String::from("invalid window animation rectangle")));
+                        return;
+                    }
+                    let [x, y, w, h] = target.rect;
+                    let rect = smithay::utils::Rectangle::new((x, y).into(), (w, h).into());
+                    resolved.push(crate::layout::minimize_animation::AnimationTarget {
+                        id: window,
+                        output,
+                        rect,
+                        edge: target.edge,
+                        layer: layer_surface,
+                    });
+                }
+                state
+                    .niri
+                    .layout
+                    .set_window_animation_targets(&owner, resolved);
+                let _ = tx.send_blocking(Ok(()));
+            });
+            rx.recv()
+                .await
+                .map_err(|_| String::from("compositor disconnected"))??;
+            Response::Handled
+        }
         Request::Outputs => {
             let ipc_outputs = ctx.ipc_outputs.lock().unwrap().clone();
             let outputs = ipc_outputs.values().cloned().map(|o| (o.name.clone(), o));
@@ -527,8 +624,9 @@ fn make_ipc_window(
         app_id: role.app_id.clone(),
         pid: mapped.credentials().map(|c| c.pid),
         workspace_id: workspace_id.map(|id| id.get()),
-        is_focused: mapped.is_focused(),
+        is_focused: mapped.is_focused() && !mapped.is_minimized(),
         is_floating: mapped.is_floating(),
+        is_minimized: mapped.is_minimized(),
         is_urgent: mapped.is_urgent(),
         layout,
         focus_timestamp: mapped.get_focus_timestamp().map(Timestamp::from),
@@ -707,11 +805,11 @@ impl State {
         // Check for window changes.
         let mut seen = HashSet::new();
         let mut focused_id = None;
-        layout.with_windows(|mapped, _, ws_id, window_layout| {
+        layout.with_managed_windows(|mapped, _, ws_id, window_layout| {
             let id = mapped.id().get();
             seen.insert(id);
 
-            if mapped.is_focused() {
+            if mapped.is_focused() && !mapped.is_minimized() {
                 focused_id = Some(id);
             }
 
@@ -722,8 +820,9 @@ impl State {
             };
 
             let workspace_id = ws_id.map(|id| id.get());
-            let mut changed =
-                ipc_win.workspace_id != workspace_id || ipc_win.is_floating != mapped.is_floating();
+            let mut changed = ipc_win.workspace_id != workspace_id
+                || ipc_win.is_floating != mapped.is_floating()
+                || ipc_win.is_minimized != mapped.is_minimized();
 
             changed |= with_toplevel_role(mapped.toplevel(), |role| {
                 ipc_win.title != role.title || ipc_win.app_id != role.app_id
@@ -739,7 +838,7 @@ impl State {
                 batch_change_layouts.push((id, window_layout));
             }
 
-            if mapped.is_focused() && !ipc_win.is_focused {
+            if mapped.is_focused() && !mapped.is_minimized() && !ipc_win.is_focused {
                 events.push(Event::WindowFocusChanged { id: Some(id) });
             }
 
@@ -947,27 +1046,40 @@ impl State {
         for (kind, session_id, stream_id, source, credentials) in
             output_sessions.chain(cursor_sessions)
         {
-            let target = if let Some(output) = source_output(&source) {
-                niri_ipc::CastTarget::Output {
-                    name: output.name(),
-                }
-            } else if let Some(id) = source_mapped_id(&source) {
-                niri_ipc::CastTarget::Window { id: id.get() }
+            let (target, is_active) = if let Some(output) = source_output(&source) {
+                (
+                    niri_ipc::CastTarget::Output {
+                        name: output.name(),
+                    },
+                    true,
+                )
+            } else if let Some(mapped) = source_managed_window(&self.niri, &source) {
+                // A hidden window pauses frames, not the capture session or its identity.
+                (
+                    niri_ipc::CastTarget::Window {
+                        id: mapped.id().get(),
+                    },
+                    !mapped.is_minimized(),
+                )
             } else {
-                niri_ipc::CastTarget::Nothing {}
+                (niri_ipc::CastTarget::Nothing {}, false)
             };
 
             let stream_id = stream_id.get();
             seen.insert(stream_id);
 
-            if !state.casts.contains_key(&stream_id) {
+            if state
+                .casts
+                .get(&stream_id)
+                .is_none_or(|cast| cast.is_active != is_active)
+            {
                 let cast = niri_ipc::Cast {
                     session_id: session_id.get(),
                     stream_id,
                     kind,
                     target,
                     is_dynamic_target: false,
-                    is_active: true,
+                    is_active,
                     pid: credentials.map(|creds| creds.pid),
                     pw_node_id: None,
                 };

@@ -500,6 +500,8 @@ fn action_name(action: &Action) -> String {
         Action::Quit(_) => String::from("Exit niri"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
         Action::CloseWindow => String::from("Close Focused Window"),
+        Action::MinimizeWindow(_) => String::from("Minimize Window"),
+        Action::RestoreWindow(_, _) => String::from("Restore Minimized Window"),
         Action::FocusColumnLeft => String::from("Focus Column to the Left"),
         Action::FocusColumnRight => String::from("Focus Column to the Right"),
         Action::MoveColumnLeft(_) => String::from("Move Column Left"),

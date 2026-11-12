@@ -491,6 +491,8 @@ impl Niri {
                 }
                 Entry::Vacant(entry) => {
                     entry.insert(output.clone());
+                    // Restored windows have no cached output, but may still have a live cast.
+                    output_changed.push((mapped.id(), output.clone()));
                 }
             }
         });
