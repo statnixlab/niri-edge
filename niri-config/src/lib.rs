@@ -2063,6 +2063,8 @@ mod tests {
                     },
                     custom_shader: None,
                 },
+                window_minimize: None,
+                window_minimize_effect: Scale,
                 horizontal_view_movement: HorizontalViewMovementAnim(
                     Animation {
                         off: false,

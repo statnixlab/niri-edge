@@ -112,6 +112,27 @@ pub fn source_mapped_id(source: &ImageCaptureSource) -> Option<MappedId> {
     Some(source.user_data().get::<WindowSourceMappedId>()?.0)
 }
 
+/// Live managed window captured by a source, including minimized windows.
+///
+/// Use this for identity and lifetime tracking, not for rendering hidden contents.
+pub fn source_managed_window<'a>(
+    niri: &'a Niri,
+    source: &ImageCaptureSource,
+) -> Option<&'a Mapped> {
+    let id = source_mapped_id(source)?;
+    niri.layout
+        .managed_windows()
+        .find(|(_, mapped)| mapped.id() == id)
+        .map(|(_, mapped)| mapped)
+}
+
+/// Whether a live window source is temporarily unavailable because it is minimized.
+///
+/// A minimized source must keep its session identity, but must not expose hidden pixels.
+pub fn source_window_is_minimized(niri: &Niri, source: &ImageCaptureSource) -> bool {
+    source_managed_window(niri, source).is_some_and(Mapped::is_minimized)
+}
+
 /// Output of a session's source.
 pub fn source_session_output(niri: &Niri, source: &ImageCaptureSource) -> Option<Output> {
     if let Some(output) = source_output(source) {
@@ -282,6 +303,20 @@ impl ImageCopyCaptureHandler for State {
     }
 
     fn capture_constraints(&mut self, source: &ImageCaptureSource) -> Option<BufferConstraints> {
+        if let Some(mapped) =
+            source_managed_window(&self.niri, source).filter(|mapped| mapped.is_minimized())
+        {
+            // A minimized source is still alive. Keep the session with provisional SHM
+            // constraints; hidden frames fail, and restoration refreshes the output-dependent
+            // size. This avoids retaining an old output or exposing hidden window contents.
+            let size = mapped.window.bbox().size;
+            return Some(BufferConstraints {
+                size: Size::from((size.w.max(1), size.h.max(1))),
+                shm: vec![wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888],
+                dma: None,
+            });
+        }
+
         if let Some(id) = source_mapped_id(source) {
             let Some((mapped, Some(output))) = self.niri.find_mapped_output_by_id(id) else {
                 return None;
@@ -315,6 +350,16 @@ impl ImageCopyCaptureHandler for State {
         source: &ImageCaptureSource,
         _pointer: &WlPointer,
     ) -> Option<BufferConstraints> {
+        if source_window_is_minimized(&self.niri, source) {
+            // Keep cursor sessions alive too, without associating a hidden window with an
+            // output. The real cursor size is sent once the window becomes visible again.
+            return Some(BufferConstraints {
+                size: Size::from((1, 1)),
+                shm: vec![wl_shm::Format::Argb8888],
+                dma: None,
+            });
+        }
+
         let output = source_session_output(&self.niri, source)?;
         if !self.niri.output_state.contains_key(&output) {
             return None;

@@ -79,6 +79,8 @@ pub mod closing_window;
 pub mod floating;
 pub mod focus_ring;
 pub mod insert_hint_element;
+pub mod minimize_animation;
+mod minimized;
 pub mod monitor;
 pub mod opening_window;
 pub mod scrolling;
@@ -330,6 +332,9 @@ pub trait LayoutElement {
     /// Runs periodic clean-up tasks.
     fn refresh(&self);
 
+    /// Updates the managed visibility state without unmapping the client.
+    fn set_minimized(&mut self, _minimized: bool) {}
+
     fn take_animation_snapshot(&mut self) -> Option<LayoutElementRenderSnapshot>;
 
     fn set_interactive_resize(&mut self, data: Option<InteractiveResizeData>);
@@ -343,6 +348,10 @@ pub trait LayoutElement {
 pub struct Layout<W: LayoutElement> {
     /// Monitors and workspaes in the layout.
     monitor_set: MonitorSet<W>,
+    /// Live windows outside the ordinary layout, in minimization order.
+    minimized_windows: Vec<minimized::MinimizedWindow<W>>,
+    minimize_animations: Vec<minimize_animation::MinimizeAnimation<W::Id>>,
+    minimize_targets: Vec<minimize_animation::TargetHint<W::Id>>,
     /// Whether the layout should draw as active.
     ///
     /// This normally indicates that the layout has keyboard focus, but not always. E.g. when the
@@ -496,6 +505,7 @@ pub enum ConfigureIntent {
 }
 
 /// Tile that was just removed from the layout.
+#[derive(Debug)]
 pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
     /// Width of the column the tile was in.
@@ -720,6 +730,9 @@ impl<W: LayoutElement> Layout<W> {
     pub fn with_options(clock: Clock, options: Options) -> Self {
         Self {
             monitor_set: MonitorSet::NoOutputs { workspaces: vec![] },
+            minimized_windows: Vec::new(),
+            minimize_animations: Vec::new(),
+            minimize_targets: Vec::new(),
             is_active: true,
             last_active_workspace_id: HashMap::new(),
             interactive_move: None,
@@ -745,6 +758,9 @@ impl<W: LayoutElement> Layout<W> {
 
         Self {
             monitor_set: MonitorSet::NoOutputs { workspaces },
+            minimized_windows: Vec::new(),
+            minimize_animations: Vec::new(),
+            minimize_targets: Vec::new(),
             is_active: true,
             last_active_workspace_id: HashMap::new(),
             interactive_move: None,
@@ -876,6 +892,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn remove_output(&mut self, output: &Output) {
+        self.remove_animation_output(output);
         self.monitor_set = match mem::take(&mut self.monitor_set) {
             MonitorSet::Normal {
                 mut monitors,
@@ -1157,6 +1174,15 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         transaction: Transaction,
     ) -> Option<RemovedTile<W>> {
+        self.cancel_window_animation(window);
+        if let Some(idx) = self
+            .minimized_windows
+            .iter()
+            .position(|entry| entry.id() == window)
+        {
+            return Some(self.minimized_windows.remove(idx).removed);
+        }
+
         if let Some(state) = &self.interactive_move {
             match state {
                 InteractiveMoveState::Starting { window_id, .. } => {
@@ -1258,6 +1284,17 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
+        if let Some(entry) = self
+            .minimized_windows
+            .iter_mut()
+            .find(|entry| entry.id() == window)
+        {
+            if let Some(serial) = serial {
+                entry.removed.tile.window_mut().on_commit(serial);
+            }
+            entry.removed.tile.update_window();
+            return;
+        }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
                 // Do this before calling update_window() so it can get up-to-date info.
@@ -1425,6 +1462,31 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
+        }
+
+        None
+    }
+
+    pub fn window_render_location(&self, wl_surface: &WlSurface) -> Option<Point<f64, Logical>> {
+        if self.overview_progress.is_some() {
+            return None;
+        }
+
+        if let Some(InteractiveMoveState::Moving(m)) = &self.interactive_move {
+            if m.tile.window().is_wl_surface(wl_surface) {
+                return Some(m.tile_render_location(1.) + m.tile.buf_loc() + m.tile.bob_offset());
+            }
+        }
+
+        match &self.monitor_set {
+            MonitorSet::Normal { monitors, .. } => {
+                for mon in monitors {
+                    if let Some(loc) = mon.window_render_location(wl_surface) {
+                        return Some(loc);
+                    }
+                }
+            }
+            MonitorSet::NoOutputs { .. } => (),
         }
 
         None
@@ -2439,6 +2501,19 @@ impl<W: LayoutElement> Layout<W> {
 
         let zoom = self.overview_zoom();
 
+        let mut seen_windows = Vec::new();
+        for (_, window) in self.managed_windows() {
+            assert!(
+                !seen_windows.contains(&window.id()),
+                "each managed window must have one owner"
+            );
+            seen_windows.push(window.id());
+        }
+        for entry in &self.minimized_windows {
+            entry.removed.tile.verify_invariants();
+            assert_ne!(self.focus().map(LayoutElement::id), Some(entry.id()));
+        }
+
         let mut move_win_id = None;
         if let Some(state) = &self.interactive_move {
             match state {
@@ -2768,9 +2843,17 @@ impl<W: LayoutElement> Layout<W> {
                 }
             }
         }
+        self.advance_minimize_animations();
     }
 
     pub fn are_animations_ongoing(&self, output: Option<&Output>) -> bool {
+        if self
+            .minimize_animations
+            .iter()
+            .any(|a| output.is_none_or(|o| a.output == *o))
+        {
+            return true;
+        }
         // Keep advancing animations if we might need to scroll the view.
         if let Some(dnd) = &self.dnd {
             if output.is_none_or(|output| *output == dnd.output) {
@@ -2863,6 +2946,10 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn update_shaders(&mut self) {
+        for entry in &mut self.minimized_windows {
+            entry.removed.tile.update_shaders();
+        }
+
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             move_.tile.update_shaders();
         }
@@ -3540,6 +3627,9 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_fullscreen(&mut self, id: &W::Id, is_fullscreen: bool) {
+        if self.set_minimized_fullscreen(id, is_fullscreen) {
+            return;
+        }
         // Check if this is a request to unset the windowed fullscreen state.
         if !is_fullscreen {
             let mut handled = false;
@@ -3609,6 +3699,14 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_windowed_fullscreen(&mut self, id: &W::Id) {
+        if self.is_minimized(id) {
+            self.with_managed_windows_mut(|window, _| {
+                if window.id() == id {
+                    window.request_windowed_fullscreen(!window.is_pending_windowed_fullscreen());
+                }
+            });
+            return;
+        }
         let (_, window) = self.windows().find(|(_, win)| win.id() == id).unwrap();
         if window.pending_sizing_mode().is_fullscreen() {
             // Remove the real fullscreen.
@@ -3629,6 +3727,9 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) {
+        if self.set_minimized_maximized(id, maximize) {
+            return;
+        }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == id {
                 return;
@@ -4911,6 +5012,16 @@ impl<W: LayoutElement> Layout<W> {
         let _span = tracy_client::span!("Layout::refresh");
 
         self.is_active = is_active;
+
+        for entry in &mut self.minimized_windows {
+            let win = entry.removed.tile.window_mut();
+            win.set_activated(false);
+            win.set_active_in_column(false);
+            win.set_interactive_resize(None);
+            // Hidden clients must still complete pending configure/commit handshakes.
+            win.send_pending_configure();
+            win.refresh();
+        }
 
         let mut ongoing_scrolling_dnd = self.dnd.is_some().then_some(true);
 
