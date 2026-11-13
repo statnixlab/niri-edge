@@ -1024,6 +1024,7 @@ impl XdgShellHandler for State {
 
     fn app_id_changed(&mut self, toplevel: ToplevelSurface) {
         self.update_window_rules(&toplevel);
+        self.queue_window_family_redraw(&toplevel);
     }
 
     fn title_changed(&mut self, toplevel: ToplevelSurface) {
@@ -1031,6 +1032,7 @@ impl XdgShellHandler for State {
     }
 
     fn parent_changed(&mut self, toplevel: ToplevelSurface) {
+        self.queue_window_family_redraw(&toplevel);
         let Some(parent) = toplevel.parent() else {
             return;
         };
@@ -1532,6 +1534,19 @@ impl State {
                     self.niri.queue_redraw(&output);
                 }
             }
+        }
+    }
+
+    fn queue_window_family_redraw(&mut self, toplevel: &ToplevelSurface) {
+        // App-id/parent changes can change family layers even when no window rule changed.
+        // Include parent removal and parents in the tiling layer.
+        let output = self
+            .niri
+            .layout
+            .find_window_and_output(toplevel.wl_surface())
+            .and_then(|(_, output)| output.cloned());
+        if let Some(output) = output {
+            self.niri.queue_redraw(&output);
         }
     }
 }

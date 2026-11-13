@@ -429,6 +429,23 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
+    /// Apply the owner's layer without changing keyboard focus, geometry or minimization state.
+    pub(super) fn apply_family_layers(&mut self, layers: &[(W::Id, bool)]) {
+        let mut next = 0;
+        for idx in 0..self.tiles.len() {
+            let id = self.tiles[idx].window().id();
+            let Some((_, above)) = layers.iter().find(|(window, _)| window == id) else {
+                continue;
+            };
+            self.data[idx].above_tiling = *above;
+            if *above {
+                // Stable partition: preserve child-before-parent order within the active family.
+                self.raise_window(idx, next);
+                next += 1;
+            }
+        }
+    }
+
     pub fn is_above_tiling(&self, id: &W::Id) -> bool {
         self.idx_of(id).is_some_and(|idx| {
             !self.options.layout.floating_windows_follow_focus || self.data[idx].above_tiling

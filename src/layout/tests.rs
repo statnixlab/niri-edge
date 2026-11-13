@@ -28,6 +28,7 @@ impl<W: LayoutElement> Default for Layout<W> {
 struct TestWindowInner {
     id: usize,
     parent_id: Cell<Option<usize>>,
+    app_id: RefCell<Option<String>>,
     bbox: Cell<Rectangle<i32, Logical>>,
     initial_bbox: Rectangle<i32, Logical>,
     requested_size: Cell<Option<Size<i32, Logical>>>,
@@ -81,6 +82,7 @@ impl TestWindow {
         Self(Rc::new(TestWindowInner {
             id: params.id,
             parent_id: Cell::new(params.parent_id),
+            app_id: RefCell::new(None),
             bbox: Cell::new(params.bbox),
             initial_bbox: params.bbox,
             requested_size: Cell::new(None),
@@ -259,6 +261,14 @@ impl LayoutElement for TestWindow {
 
     fn is_child_of(&self, parent: &Self) -> bool {
         self.0.parent_id.get() == Some(parent.0.id)
+    }
+
+    fn has_parent(&self) -> bool {
+        self.0.parent_id.get().is_some()
+    }
+
+    fn app_id(&self) -> Option<String> {
+        self.0.app_id.borrow().clone()
     }
 
     fn refresh(&self) {}

@@ -225,3 +225,254 @@ fn floating_stacking_parent_activation_raises_its_dialog_but_not_unrelated_float
     assert!(!ws.floating_window_above_scrolling(&3));
     assert_eq!(visual_order(&ws), vec![4, 2, 1, 3]);
 }
+
+fn enable_families(ws: &mut Workspace<TestWindow>) {
+    let mut options = Options::clone(&ws.base_options);
+    options.layout.floating_windows_follow_parent = true;
+    ws.update_config(Rc::new(options));
+    settle(ws);
+}
+
+fn add_family_window(
+    ws: &mut Workspace<TestWindow>,
+    id: usize,
+    parent: Option<usize>,
+    app_id: Option<&str>,
+    floating: bool,
+    activate: ActivateWindow,
+) -> TestWindow {
+    let mut params = TestWindowParams::new(id);
+    params.parent_id = parent;
+    let window = TestWindow::new(params);
+    *window.0.app_id.borrow_mut() = app_id.map(str::to_owned);
+    ws.add_tile(
+        ws.make_tile(window.clone()),
+        WorkspaceAddWindowTarget::Auto,
+        activate,
+        ColumnWidth::Fixed(800.),
+        false,
+        floating,
+        None,
+    );
+    settle(ws);
+    window
+}
+
+#[test]
+fn floating_stacking_family_tiled_owner_restores_nested_dialogs_and_input_order() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    let dialog = ws.windows().find(|w| *w.id() == 2).unwrap().clone();
+    dialog.0.parent_id.set(Some(1));
+    let geometry = floating_geometry(&ws);
+    let p = overlap(&ws);
+    add_family_window(&mut ws, 3, Some(2), None, true, ActivateWindow::Yes);
+    add_family_window(&mut ws, 4, None, None, false, ActivateWindow::Yes);
+    assert!(!ws.floating_window_above_scrolling(&2));
+    assert!(!ws.floating_window_above_scrolling(&3));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&2));
+    assert!(ws.floating_window_above_scrolling(&3));
+    assert_eq!(ws.active_window().unwrap().id(), &1);
+    assert_eq!(&visual_order(&ws)[..2], &[3, 2]);
+    // Remove the nested dialog so the original overlap point tests the direct child.
+    ws.remove_tile(&3, crate::utils::transaction::Transaction::new());
+    settle(&mut ws);
+    assert_eq!(hit(&ws, p), 2);
+    assert_eq!(floating_geometry(&ws), geometry);
+}
+
+#[test]
+fn floating_stacking_family_floating_owner_and_siblings_switch_together() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    add_family_window(&mut ws, 3, Some(2), None, true, ActivateWindow::Yes);
+    add_family_window(&mut ws, 4, Some(2), None, true, ActivateWindow::Yes);
+    add_family_window(&mut ws, 5, None, None, false, ActivateWindow::Yes);
+    for id in [2, 3, 4] {
+        assert!(!ws.floating_window_above_scrolling(&id));
+    }
+    ws.activate_window(&3);
+    settle(&mut ws);
+    for id in [2, 3, 4] {
+        assert!(ws.floating_window_above_scrolling(&id));
+    }
+    let order = visual_order(&ws);
+    for child in [3, 4] {
+        assert!(order.iter().position(|id| *id == child) < order.iter().position(|id| *id == 2));
+    }
+    assert_eq!(ws.active_window().unwrap().id(), &3);
+}
+
+#[test]
+fn floating_stacking_family_declared_parent_wins_over_same_app_other_document() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    add_family_window(&mut ws, 3, None, Some("editor"), false, ActivateWindow::Yes);
+    add_family_window(
+        &mut ws,
+        4,
+        Some(1),
+        Some("editor"),
+        true,
+        ActivateWindow::No,
+    );
+    assert!(!ws.floating_window_above_scrolling(&4));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&4));
+    ws.activate_window(&3);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&4));
+}
+
+#[test]
+fn floating_stacking_family_unique_app_fallback_and_late_app_id() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    let owner = ws.windows().find(|w| *w.id() == 1).unwrap().clone();
+    *owner.0.app_id.borrow_mut() = Some("editor".into());
+    let dialog = add_family_window(&mut ws, 3, None, None, true, ActivateWindow::Yes);
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    *dialog.0.app_id.borrow_mut() = Some("editor".into());
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&3));
+    assert!(!ws.floating_window_above_scrolling(&2));
+    add_family_window(&mut ws, 4, None, Some("other"), false, ActivateWindow::Yes);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&3));
+}
+
+#[test]
+fn floating_stacking_family_ambiguous_app_and_missing_declared_parent_are_not_guessed() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    let owner = ws.windows().find(|w| *w.id() == 1).unwrap().clone();
+    *owner.0.app_id.borrow_mut() = Some("editor".into());
+    add_family_window(&mut ws, 3, None, Some("editor"), false, ActivateWindow::Yes);
+    add_family_window(&mut ws, 4, None, Some("editor"), true, ActivateWindow::Yes);
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&4));
+    ws.activate_window(&3);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&4));
+    ws.remove_tile(&3, crate::utils::transaction::Transaction::new());
+    let dialog = ws.windows().find(|w| *w.id() == 4).unwrap().clone();
+    dialog.0.parent_id.set(Some(999));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&4));
+}
+
+#[test]
+fn floating_stacking_family_keyboard_focus_and_pointer_no_raise() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    add_family_window(&mut ws, 3, Some(1), None, true, ActivateWindow::No);
+    add_family_window(&mut ws, 4, None, None, false, ActivateWindow::Yes);
+    ws.focus_column_first();
+    settle(&mut ws);
+    assert_eq!(ws.active_window().unwrap().id(), &1);
+    assert!(ws.floating_window_above_scrolling(&3));
+    ws.focus_column_last();
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    ws.activate_window_without_raising(&1);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    add_family_window(&mut ws, 5, Some(1), None, true, ActivateWindow::No);
+    assert!(!ws.floating_window_above_scrolling(&5));
+    ws.activate_window_without_raising(&3);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&3));
+    assert!(ws.floating_window_above_scrolling(&5));
+}
+
+#[test]
+fn floating_stacking_family_background_dialog_does_not_cover_other_app() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    add_family_window(&mut ws, 3, None, None, false, ActivateWindow::Yes);
+    add_family_window(&mut ws, 4, Some(1), None, true, ActivateWindow::No);
+    assert_eq!(ws.active_window().unwrap().id(), &3);
+    assert!(!ws.floating_window_above_scrolling(&4));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&4));
+}
+
+#[test]
+fn floating_stacking_family_config_reload_and_reparenting() {
+    let mut ws = setup(true);
+    let dialog = add_family_window(&mut ws, 3, Some(1), None, true, ActivateWindow::No);
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    let config = niri_config::Config::parse_mem(
+        "layout { floating-windows-follow-focus; floating-windows-follow-parent; }",
+    )
+    .unwrap();
+    assert!(config.layout.floating_windows_follow_parent);
+    enable_families(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&3));
+    add_family_window(&mut ws, 4, None, None, false, ActivateWindow::Yes);
+    dialog.0.parent_id.set(Some(4));
+    settle(&mut ws);
+    assert!(ws.floating_window_above_scrolling(&3));
+    ws.activate_window(&1);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+    let mut options = Options::clone(&ws.base_options);
+    options.layout.floating_windows_follow_parent = false;
+    ws.update_config(Rc::new(options));
+    ws.activate_window(&4);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&3));
+}
+
+#[test]
+fn floating_stacking_family_fullscreen_owner_keeps_its_dialog_accessible() {
+    let mut ws = setup(true);
+    enable_families(&mut ws);
+    let dialog = ws.windows().find(|w| *w.id() == 2).unwrap().clone();
+    dialog.0.parent_id.set(Some(1));
+    ws.activate_window(&1);
+    ws.set_fullscreen(&1, true);
+    settle(&mut ws);
+    assert!(ws.fullscreen_window_above_top_layer().is_some());
+    assert!(ws.is_floating_visible());
+    assert_eq!(hit(&ws, overlap(&ws)), 2);
+    add_family_window(&mut ws, 3, None, None, false, ActivateWindow::Yes);
+    ws.set_fullscreen(&3, true);
+    settle(&mut ws);
+    assert!(!ws.floating_window_above_scrolling(&2));
+    assert!(!ws.is_floating_visible());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn floating_stacking_family_random_layout_operations(
+        ops in prop::collection::vec(any::<Op>(), 1..60),
+    ) {
+        let mut options = Options::default();
+        options.layout.floating_windows_follow_focus = true;
+        options.layout.floating_windows_follow_parent = true;
+        let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
+        for op in ops {
+            op.apply(&mut layout);
+            layout.refresh(true);
+            layout.verify_invariants();
+        }
+    }
+}
