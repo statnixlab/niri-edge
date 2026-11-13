@@ -11,7 +11,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::monitor::InsertPosition;
+use super::monitor::{EdgeSnapSide, InsertPosition};
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
@@ -42,6 +42,9 @@ pub struct ScrollingSpace<W: LayoutElement> {
 
     /// Index of the currently active column, if any.
     active_column_idx: usize,
+
+    /// Finish edge alignment when the client commits its requested half width.
+    pending_edge_snap: Option<(ColumnId, EdgeSnapSide)>,
 
     /// Ongoing interactive resize.
     interactive_resize: Option<InteractiveResize<W>>,
@@ -326,6 +329,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             columns: Vec::new(),
             data: Vec::new(),
             active_column_idx: 0,
+            pending_edge_snap: None,
             interactive_resize: None,
             view_offset: ViewOffset::Static(0.),
             activate_prev_column_on_removal: None,
@@ -1435,6 +1439,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 self.animate_view_offset_to_column_with_config(None, col_idx, None, config);
             }
         }
+        if self.pending_edge_snap.as_ref().is_some_and(|(id, _)| *id == self.columns[col_idx].id())
+            && (serial.is_some() || offset != 0.)
+        {
+            let (_, side) = self.pending_edge_snap.take().unwrap();
+            if col_idx == self.active_column_idx && self.columns[col_idx].sizing_mode().is_normal() {
+                self.align_column_to_edge(col_idx, side, self.data[col_idx].width);
+            }
+        }
     }
 
     pub fn scroll_amount_to_activate(&self, window: &W::Id) -> f64 {
@@ -2240,6 +2252,51 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         cancel_resize_for_column(&mut self.interactive_resize, col);
     }
 
+    pub(super) fn edge_snap_area(&self, side: EdgeSnapSide) -> Rectangle<f64, Logical> {
+        let gaps = self.options.layout.gaps;
+        let area = self.working_area;
+        let width = ((area.size.w - gaps) * 0.5 - gaps).max(1.);
+        let x = match side {
+            EdgeSnapSide::Left => area.loc.x + gaps,
+            EdgeSnapSide::Right => area.loc.x + area.size.w - gaps - width,
+        };
+        Rectangle::new(
+            (x, area.loc.y + gaps).into(),
+            (width, (area.size.h - gaps * 2.).max(1.)).into(),
+        )
+    }
+
+    pub(super) fn edge_snap_column_idx(&self, side: EdgeSnapSide) -> usize {
+        let area = self.working_area;
+        let x = match side {
+            EdgeSnapSide::Left => area.loc.x,
+            EdgeSnapSide::Right => area.loc.x + area.size.w,
+        };
+        match self.insert_position((x, area.loc.y + area.size.h / 2.).into()) {
+            InsertPosition::NewColumn(idx) => idx,
+            InsertPosition::InColumn(idx, _) => idx + usize::from(side == EdgeSnapSide::Right),
+            _ => unreachable!(),
+        }
+    }
+
+    fn align_column_to_edge(&mut self, idx: usize, side: EdgeSnapSide, width: f64) {
+        let area = self.working_area;
+        let gaps = self.options.layout.gaps;
+        let x = match side {
+            EdgeSnapSide::Left => area.loc.x + gaps,
+            EdgeSnapSide::Right => area.loc.x + area.size.w - gaps - width,
+        };
+        self.animate_view_offset(idx, -x);
+    }
+
+    pub(super) fn align_edge_snapped_window(&mut self, id: &W::Id, side: EdgeSnapSide) {
+        let idx = self.columns.iter().position(|col| col.contains(id)).unwrap();
+        let col = &self.columns[idx];
+        let width = col.tiles[0].tile_expected_or_current_size().w + col.extra_size().w;
+        self.align_column_to_edge(idx, side, width);
+        self.pending_edge_snap = Some((self.columns[idx].id(), side));
+    }
+
     pub fn center_window(&mut self, window: Option<&W::Id>) {
         if self.columns.is_empty() {
             return;
@@ -2510,6 +2567,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         position: InsertPosition,
     ) -> Option<Rectangle<f64, Logical>> {
         let mut hint_area = match position {
+            InsertPosition::EdgeSnap(side) => return Some(self.edge_snap_area(side)),
             InsertPosition::NewColumn(column_index) => {
                 if column_index == 0 || column_index == self.columns.len() {
                     let size = Size::from((

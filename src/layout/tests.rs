@@ -18,6 +18,7 @@ mod fullscreen;
 mod minimized;
 mod floating_stacking;
 mod floating_top_boundary;
+mod floating_edge_snap;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {

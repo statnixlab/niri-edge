@@ -36,7 +36,7 @@ use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
-use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
+use monitor::{EdgeSnapSide, InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
     Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
@@ -630,6 +630,26 @@ impl<W: LayoutElement> InteractiveMoveState<W> {
 }
 
 impl<W: LayoutElement> InteractiveMoveData<W> {
+    fn edge_snap(&self, zoom: f64, overview_open: bool) -> Option<EdgeSnapSide> {
+        if overview_open || !self.is_floating || zoom != 1. || !self.tile.options().layout.floating_windows_edge_snap {
+            return None;
+        }
+        let size = output_size(&self.output);
+        let pos = self.pointer_pos_within_output;
+        if pos.x < 0. || pos.x > size.w || pos.y < 0. || pos.y >= size.h {
+            return None;
+        }
+        // Narrow strip at the actual output edge, measured in logical pixels.
+        const TRIGGER_WIDTH: f64 = 8.;
+        if pos.x <= TRIGGER_WIDTH {
+            Some(EdgeSnapSide::Left)
+        } else if size.w - TRIGGER_WIDTH <= pos.x {
+            Some(EdgeSnapSide::Right)
+        } else {
+            None
+        }
+    }
+
     fn tile_render_location(&self, zoom: f64) -> Point<f64, Logical> {
         let scale = Scale::from(self.output.current_scale().fractional_scale());
         let window_size = self.tile.window_size();
@@ -2755,6 +2775,8 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         let is_overview_open = self.overview_open;
+        let edge_snapping = self.interactive_move.as_ref().and_then(|state| state.moving())
+            .and_then(|move_| move_.edge_snap(self.overview_zoom(), is_overview_open)).is_some();
 
         // Scroll the view if needed.
         if let Some((output, pos_within_output, is_scrolling)) = dnd_scroll {
@@ -2762,7 +2784,10 @@ impl<W: LayoutElement> Layout<W> {
                 let mut scrolled = false;
 
                 let zoom = mon.overview_zoom();
-                scrolled |= mon.dnd_scroll_gesture_scroll(pos_within_output, 1. / zoom);
+                // A snap preview at a corner must not also switch workspaces.
+                if !edge_snapping {
+                    scrolled |= mon.dnd_scroll_gesture_scroll(pos_within_output, 1. / zoom);
+                }
 
                 if is_scrolling {
                     if let Some((ws, geo)) = mon.workspace_under(pos_within_output) {
@@ -3012,6 +3037,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         let _span = tracy_client::span!("Layout::update_insert_hint::update");
+        let overview_open = self.overview_open;
 
         if let Some(mon) = self.monitor_for_output_mut(&move_.output) {
             let zoom = mon.overview_zoom();
@@ -3022,7 +3048,9 @@ impl<W: LayoutElement> Layout<W> {
                     let ws = &mut mon.workspaces[idx];
                     let pos_within_workspace =
                         (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                    let position = if move_.is_floating {
+                    let position = if let Some(side) = move_.edge_snap(zoom, overview_open) {
+                        InsertPosition::EdgeSnap(side)
+                    } else if move_.is_floating {
                         InsertPosition::Floating
                     } else {
                         ws.scrolling_insert_position(pos_within_workspace)
@@ -4380,6 +4408,7 @@ impl<W: LayoutElement> Layout<W> {
 
         // Dragging in the overview shouldn't switch the workspace and so on.
         let allow_to_activate_workspace = !self.overview_open;
+        let overview_open = self.overview_open;
 
         match &mut self.monitor_set {
             MonitorSet::Normal {
@@ -4396,7 +4425,9 @@ impl<W: LayoutElement> Layout<W> {
                             InsertWorkspace::Existing(ws_id) => {
                                 let ws_idx = mon.idx_of_ws(ws_id).unwrap();
 
-                                let position = if move_.is_floating {
+                                let position = if let Some(side) = move_.edge_snap(zoom, overview_open) {
+                                    InsertPosition::EdgeSnap(side)
+                                } else if move_.is_floating {
                                     InsertPosition::Floating
                                 } else {
                                     let pos_within_workspace =
@@ -4456,6 +4487,30 @@ impl<W: LayoutElement> Layout<W> {
                 };
 
                 match position {
+                    InsertPosition::EdgeSnap(side) => {
+                        let ws_id = mon.workspaces[ws_idx].id();
+                        let column_idx = mon.workspaces[ws_idx].edge_snap_column_idx(side);
+                        let mut tile = move_.tile;
+                        if let Some(size) = tile.window().expected_size() {
+                            tile.floating_window_size = Some(size);
+                        }
+                        tile.floating_expansion_restore = None;
+                        mon.add_tile(
+                            tile,
+                            MonitorAddWindowTarget::Workspace {
+                                id: ws_id,
+                                column_idx: Some(column_idx),
+                            },
+                            ActivateWindow::Yes,
+                            allow_to_activate_workspace,
+                            ColumnWidth::Proportion(0.5),
+                            false,
+                            false,
+                            None,
+                        );
+                        let ws_idx = mon.idx_of_ws(ws_id).unwrap();
+                        mon.workspaces[ws_idx].align_edge_snapped_window(&win_id, side);
+                    }
                     InsertPosition::NewColumn(column_idx) => {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(

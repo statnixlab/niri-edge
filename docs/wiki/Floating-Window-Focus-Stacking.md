@@ -68,3 +68,24 @@ restoring from native maximization returns to the expanded float.
 Dragging an expanded float restores its ordinary size under the pointer.
 Explicit move/resize commands leave expansion mode. The ordinary floating top
 boundary continues to follow the tiling layout when configured.
+
+## Drag floating windows to half-screen tiling
+
+```kdl
+layout {
+    floating-windows-edge-snap
+}
+```
+
+Dragging a floating window into the outer 8 logical pixels at either horizontal
+output edge shows a half-screen insertion preview. Release there to create a
+normal half-width tiling column aligned to that side. Moving the pointer away
+before release cancels the preview and keeps the window floating. The preview
+and placement respect the destination output's work area, struts, gaps and scale.
+Application size constraints remain authoritative.
+
+The action uses the pointer position, not the window edge. Existing tiled windows
+remain in their columns. The window's floating size is retained for a later
+floating toggle. Overview drags and ordinary tiled-window drags keep their normal
+behavior. Snap previews at corners suppress simultaneous workspace edge scrolling.
+The feature is disabled by default and supports output/workspace layout overrides.
