@@ -3218,6 +3218,15 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    pub fn toggle_floating_expanded(&mut self, window: &W::Id) {
+        for ws in self.workspaces_mut() {
+            if ws.is_floating(window) {
+                ws.toggle_floating_expanded(window);
+                return;
+            }
+        }
+    }
+
     pub fn set_column_width(&mut self, change: SizeChange) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
@@ -4180,6 +4189,11 @@ impl<W: LayoutElement> Layout<W> {
 
                 tile.stop_move_animations();
                 tile.interactive_move_offset = Point::from((0., 0.));
+                // Dragging an expanded float restores its ordinary size under the pointer.
+                if let Some((size, _)) = tile.floating_expansion_restore.take() {
+                    tile.floating_window_size = Some(size);
+                    tile.window_mut().request_size_once(size, true);
+                }
                 tile.window().output_enter(&output);
                 tile.window().set_preferred_scale_transform(
                     output.current_scale(),

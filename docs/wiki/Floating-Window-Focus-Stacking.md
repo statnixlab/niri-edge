@@ -50,3 +50,21 @@ pointer dragging, and floating movement animations. Overview drag previews stay
 free to move between workspace thumbnails; the dropped window is constrained in
 the destination workspace. Native maximize and fullscreen retain their existing
 behavior. The setting is off by default and supports output/workspace overrides.
+
+## Titlebar double-click while floating
+
+With `titlebar-double-click-to-column` enabled, double-clicking a floating
+window's titlebar toggles expansion into the same usable rectangle as a normal
+full-width tiling column. The window remains in the floating layer throughout;
+it does not advertise native Maximized or Fullscreen state. Double-click again
+to restore its saved size and position. Each window stores its own restore data.
+
+The expanded rectangle follows current panel reservations, struts, gaps and
+scale. It respects application size constraints. Saved restore geometry travels
+with the window across minimization and workspace/output moves. Native maximize
+buttons and programmatic maximize requests retain their existing behavior;
+restoring from native maximization returns to the expanded float.
+
+Dragging an expanded float restores its ordinary size under the pointer.
+Explicit move/resize commands leave expansion mode. The ordinary floating top
+boundary continues to follow the tiling layout when configured.

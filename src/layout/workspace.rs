@@ -1337,6 +1337,10 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.toggle_full_width_for_window(window);
     }
 
+    pub fn toggle_floating_expanded(&mut self, window: &W::Id) {
+        self.floating.toggle_expanded(window);
+    }
+
     pub fn set_column_width(&mut self, change: SizeChange) {
         if self.floating_is_active.get() {
             self.floating.set_window_width(None, change, true);
