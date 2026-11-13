@@ -54,6 +54,12 @@ pub struct Workspace<W: LayoutElement> {
     /// Whether the floating layout is active instead of the scrolling layout.
     floating_is_active: FloatingActive,
 
+    /// Pointer-focused window and the previous stacking owner for focus without raising.
+    floating_family_no_raise: Option<(W::Id, Option<W::Id>)>,
+
+    /// The active family has floating members that must remain visible over a fullscreen owner.
+    floating_family_visible: bool,
+
     /// The original outputs of this workspace, in preference order.
     ///
     /// Most of the time this will be the workspace's current output, however, after an output
@@ -262,6 +268,8 @@ impl<W: LayoutElement> Workspace<W> {
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
+            floating_family_no_raise: None,
+            floating_family_visible: false,
             original_outputs,
             scale,
             transform: output.current_transform(),
@@ -324,6 +332,8 @@ impl<W: LayoutElement> Workspace<W> {
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
+            floating_family_no_raise: None,
+            floating_family_visible: false,
             output: None,
             scale,
             transform: Transform::Normal,
@@ -438,6 +448,7 @@ impl<W: LayoutElement> Workspace<W> {
 
         self.base_options = base_options;
         self.options = options;
+        self.sync_floating_family_stacking();
     }
 
     pub fn update_layout_config(&mut self, layout_config: Option<niri_config::LayoutPart>) {
@@ -1592,8 +1603,40 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     fn focus_scrolling_and_lower_floating(&mut self) {
+        self.floating_family_no_raise = None;
         self.floating_is_active = FloatingActive::No;
         self.floating.lower_all();
+        self.sync_floating_family_stacking();
+    }
+
+    fn sync_floating_family_stacking(&mut self) {
+        if !self.options.layout.floating_windows_follow_focus
+            || !self.options.layout.floating_windows_follow_parent
+            || self.floating.is_empty()
+        {
+            self.floating_family_visible = false;
+            return;
+        }
+        let Some(active) = self.active_window().map(|window| window.id().clone()) else {
+            self.floating_family_visible = false;
+            return;
+        };
+        let anchor = match self.floating_family_no_raise.as_ref() {
+            Some((hovered, anchor)) if *hovered == active => anchor.clone(),
+            _ => {
+                self.floating_family_no_raise = None;
+                Some(active)
+            }
+        };
+        let windows: Vec<_> = self
+            .scrolling
+            .tiles()
+            .map(|tile| (tile.window(), false))
+            .chain(self.floating.tiles().map(|tile| (tile.window(), true)))
+            .collect();
+        let layers = super::floating_family::family_layers(&windows, anchor.as_ref());
+        self.floating_family_visible = layers.iter().any(|(_, above)| *above);
+        self.floating.apply_family_layers(&layers);
     }
 
     pub fn focus_floating(&mut self) {
@@ -1621,7 +1664,9 @@ impl<W: LayoutElement> Workspace<W> {
             self.focus_scrolling_and_lower_floating();
         } else {
             self.floating_is_active = FloatingActive::Yes;
+            self.floating_family_no_raise = None;
             self.floating.raise_active();
+            self.sync_floating_family_stacking();
         }
     }
 
@@ -1842,11 +1887,12 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn is_floating_visible(&self) -> bool {
-        // If the focus is on a fullscreen scrolling window, hide the floating windows.
+        // Fullscreen hides unrelated floats, but its own dialogs must stay accessible.
         matches!(
             self.floating_is_active,
             FloatingActive::Yes | FloatingActive::NoButRaised
-        ) || self.fullscreen_window_above_top_layer().is_none()
+        ) || self.floating_family_visible
+            || self.fullscreen_window_above_top_layer().is_none()
     }
 
     pub fn store_unmap_snapshot_if_empty(
@@ -1974,6 +2020,8 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        // Also covers keyboard navigation, reparenting, app-id changes and window removal.
+        self.sync_floating_family_stacking();
         self.scrolling
             .refresh(is_active && !self.floating_is_active.get(), is_focused);
         self.floating
@@ -1995,6 +2043,8 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
         if self.floating.activate_window(window) {
             self.floating_is_active = FloatingActive::Yes;
+            self.floating_family_no_raise = None;
+            self.sync_floating_family_stacking();
             true
         } else if self.scrolling.activate_window(window) {
             self.focus_scrolling_and_lower_floating();
@@ -2005,10 +2055,23 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) -> bool {
+        // Keep the last explicit stacking owner while still classifying newly opened dialogs.
+        let anchor = match self.floating_family_no_raise.as_ref() {
+            Some((hovered, anchor))
+                if self
+                    .active_window()
+                    .is_some_and(|active| active.id() == hovered) =>
+            {
+                anchor.clone()
+            }
+            _ => self.active_window().map(|active| active.id().clone()),
+        };
         if self.floating.activate_window_without_raising(window) {
             self.floating_is_active = FloatingActive::Yes;
+            self.floating_family_no_raise = Some((window.clone(), anchor));
             true
         } else if self.scrolling.activate_window(window) {
+            self.floating_family_no_raise = Some((window.clone(), anchor));
             self.floating_is_active = match self.floating_is_active {
                 FloatingActive::No => FloatingActive::No,
                 FloatingActive::NoButRaised => FloatingActive::NoButRaised,

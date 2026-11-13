@@ -2011,6 +2011,7 @@ mod tests {
                 client_maximize_to_column: false,
                 titlebar_double_click_to_column: false,
                 floating_windows_follow_focus: false,
+                floating_windows_follow_parent: false,
                 empty_workspace_above_first: false,
                 default_column_display: Tabbed,
                 gaps: 8.0,
