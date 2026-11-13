@@ -2013,6 +2013,7 @@ mod tests {
                 floating_windows_follow_focus: false,
                 floating_windows_follow_parent: false,
                 floating_windows_match_tiling_top: false,
+                floating_windows_edge_snap: false,
                 empty_workspace_above_first: false,
                 default_column_display: Tabbed,
                 gaps: 8.0,

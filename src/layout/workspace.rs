@@ -2091,6 +2091,14 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.insert_position(pos)
     }
 
+    pub(super) fn edge_snap_column_idx(&self, side: super::monitor::EdgeSnapSide) -> usize {
+        self.scrolling.edge_snap_column_idx(side)
+    }
+
+    pub(super) fn align_edge_snapped_window(&mut self, id: &W::Id, side: super::monitor::EdgeSnapSide) {
+        self.scrolling.align_edge_snapped_window(id, side);
+    }
+
     pub(super) fn insert_hint_area(
         &self,
         position: InsertPosition,
