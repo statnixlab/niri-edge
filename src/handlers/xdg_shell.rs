@@ -517,23 +517,26 @@ impl XdgShellHandler for State {
                 .niri
                 .titlebar_clicks
                 .take_double_click(mapped_id, get_monotonic_time());
-            let to_column = {
+            let (to_column, floating_double_click) = {
                 let config = self.niri.config.borrow();
                 if config.layout.titlebar_double_click_to_column {
-                    double_click
+                    (double_click, double_click && is_floating)
                 } else {
-                    config.layout.client_maximize_to_column && !is_maximized
+                    (
+                        config.layout.client_maximize_to_column && !is_maximized,
+                        false,
+                    )
                 }
             };
-            if to_column && !is_floating {
+            if floating_double_click {
+                self.niri.layout.toggle_floating_expanded(&window);
+            } else if to_column && !is_floating {
                 // CSD double-click and maximize buttons send the same request. A full-width
                 // column deliberately does not advertise Maximized, so the next click sends
                 // set_maximized again and toggles back, just like maximize-column.
                 self.niri.layout.toggle_full_width_for_window(&window);
             } else {
-                // Floating windows have no column to expand. Use native maximization,
-                // which also remembers their floating size/position for unmaximize.
-                // Keep repeated maximize requests idempotent once maximized.
+                // Maximize buttons and programmatic requests retain native maximization.
                 self.niri.layout.set_maximized(&window, true);
             }
         } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
@@ -627,9 +630,10 @@ impl XdgShellHandler for State {
                 .borrow()
                 .layout
                 .titlebar_double_click_to_column
-                && double_click
-                && !mapped.is_floating();
-            if to_column {
+                && double_click;
+            if to_column && mapped.is_floating() {
+                self.niri.layout.toggle_floating_expanded(&window);
+            } else if to_column {
                 self.niri.layout.toggle_full_width_for_window(&window);
             } else {
                 self.niri.layout.set_maximized(&window, false);
