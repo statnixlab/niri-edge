@@ -75,6 +75,10 @@ pub struct Tile<W: LayoutElement> {
     /// the window starts out in the tiling layout.
     pub(super) floating_pos: Option<Point<f64, SizeFrac>>,
 
+    /// Geometry before titlebar expansion within the floating layout.
+    /// Kept on the tile so minimize, workspace moves and native fullscreen preserve it.
+    pub(super) floating_expansion_restore: Option<(Size<i32, Logical>, Point<f64, SizeFrac>)>,
+
     /// Currently selected preset width index when this tile is floating.
     pub(super) floating_preset_width_idx: Option<usize>,
 
@@ -204,6 +208,7 @@ impl<W: LayoutElement> Tile<W> {
             restore_to_floating: false,
             floating_window_size: None,
             floating_pos: None,
+            floating_expansion_restore: None,
             floating_preset_width_idx: None,
             floating_preset_height_idx: None,
             open_animation: None,

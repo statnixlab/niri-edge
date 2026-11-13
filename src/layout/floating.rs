@@ -252,6 +252,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.working_area = working_area;
         self.scale = scale;
         self.options = options;
+
+        for idx in 0..self.tiles.len() {
+            if self.tiles[idx].floating_expansion_restore.is_some() {
+                self.fit_expanded(idx, false);
+            }
+        }
     }
 
     pub fn update_shaders(&mut self) {
@@ -541,6 +547,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         );
         self.data.insert(idx, data);
         self.tiles.insert(idx, tile);
+
+        if self.tiles[idx].floating_expansion_restore.is_some() {
+            self.fit_expanded(idx, false);
+        }
 
         self.bring_up_descendants_of(idx);
     }
@@ -850,6 +860,61 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.interactive_resize_end(Some(&id));
     }
 
+    /// Toggle work-area expansion without changing floating or native maximize state.
+    pub fn toggle_expanded(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.interactive_resize_end(Some(id));
+        if let Some((size, pos)) = self.tiles[idx].floating_expansion_restore.take() {
+            self.request_expanded_size(idx, size, true);
+            let pos = self.scale_by_working_area(pos);
+            self.move_and_animate(idx, pos);
+        } else {
+            let tile = &mut self.tiles[idx];
+            let win = tile.window();
+            let size = win.expected_size().unwrap_or_else(|| win.size());
+            tile.floating_expansion_restore = Some((size, self.data[idx].pos));
+            self.fit_expanded(idx, true);
+        }
+    }
+
+    fn request_expanded_size(&mut self, idx: usize, size: Size<i32, Logical>, animate: bool) {
+        let win = self.tiles[idx].window_mut();
+        let min = win.min_size();
+        let max = win.max_size();
+        let size = Size::from((
+            ensure_min_max_size(size.w.max(1), min.w, max.w),
+            ensure_min_max_size(size.h.max(1), min.h, max.h),
+        ));
+        if win.expected_size() != Some(size) {
+            win.request_size_once(size, animate);
+        }
+    }
+
+    fn fit_expanded(&mut self, idx: usize, animate: bool) {
+        let area = super::scrolling::compute_working_area(
+            self.working_area,
+            self.scale,
+            self.options.layout.struts,
+        );
+        let gaps = self.options.layout.gaps;
+        let tile = &self.tiles[idx];
+        // Match a full-width, single-window tiling column, including borders and gaps.
+        let size = Size::from((
+            tile.window_width_for_tile_width(area.size.w - 2. * gaps),
+            tile.window_height_for_tile_height(area.size.h - 2. * gaps),
+        ))
+        .to_i32_floor();
+        self.request_expanded_size(idx, size, animate);
+        let pos = area.loc + Point::from((gaps, gaps));
+        if animate {
+            self.move_and_animate(idx, pos);
+        } else {
+            self.data[idx].set_logical_pos(pos);
+        }
+    }
+
     pub fn set_window_width(&mut self, id: Option<&W::Id>, change: SizeChange, animate: bool) {
         let Some(id) = id.or(self.active_window_id.as_ref()) else {
             return;
@@ -858,6 +923,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let tile = &mut self.tiles[idx];
         tile.floating_preset_width_idx = None;
+        tile.floating_expansion_restore = None;
 
         let available_size = self.working_area.size.w;
         let win = tile.window();
@@ -905,6 +971,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let tile = &mut self.tiles[idx];
         tile.floating_preset_height_idx = None;
+        tile.floating_expansion_restore = None;
 
         let available_size = self.working_area.size.h;
         let win = tile.window();
@@ -1025,6 +1092,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn move_to(&mut self, idx: usize, new_pos: Point<f64, Logical>, animate: bool) {
+        self.tiles[idx].floating_expansion_restore = None;
         if animate {
             self.move_and_animate(idx, new_pos);
         } else {

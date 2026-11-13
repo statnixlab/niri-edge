@@ -7,6 +7,7 @@ use wayland_server::Resource as _;
 
 use super::client::{ClientId, Configure};
 use super::Fixture;
+use crate::layout::LayoutElement as _;
 
 fn setup(extra: &str) -> (Fixture, ClientId, WlSurface, ZwlrVirtualPointerV1) {
     let config = Config::parse_mem(&format!(
@@ -210,7 +211,7 @@ fn titlebar_floating_window_keeps_native_maximize() {
     f.client(id).window(&surface).set_size(640, 480);
     f.client(id).window(&surface).ack_last_and_commit();
     f.double_roundtrip(id);
-    click(&mut f, id, &surface, &pointer);
+    // A single click on the maximize button retains native behavior.
     click(&mut f, id, &surface, &pointer);
     f.client(id).window(&surface).set_maximized();
     f.double_roundtrip(id);
@@ -220,4 +221,142 @@ fn titlebar_floating_window_keeps_native_maximize() {
     f.client(id).window(&surface).unset_maximized();
     f.double_roundtrip(id);
     assert_eq!(configure(&mut f, id, &surface).size, (640, 480));
+}
+
+fn floating_geometry(f: &mut Fixture) -> (i32, i32, f64, f64) {
+    let niri = f.niri();
+    let ws = niri.layout.active_workspace().unwrap();
+    let (tile, pos) = ws.floating().tiles_with_offsets().next().unwrap();
+    let size = tile.window().size();
+    assert!(tile.window().is_floating());
+    (size.w, size.h, pos.x, pos.y)
+}
+
+fn expand_double_click(
+    f: &mut Fixture,
+    id: ClientId,
+    surface: &WlSurface,
+    pointer: &ZwlrVirtualPointerV1,
+) {
+    f.niri().titlebar_clicks.clear();
+    click(f, id, surface, pointer);
+    click(f, id, surface, pointer);
+    f.client(id).window(surface).set_maximized();
+    f.double_roundtrip(id);
+    let cfg = configure(f, id, surface);
+    assert!(!cfg.states.contains(&xdg_toplevel::State::Maximized));
+    assert!(!cfg.states.contains(&xdg_toplevel::State::Fullscreen));
+    ack(f, id, surface);
+}
+
+#[test]
+fn titlebar_floating_double_click_matches_tiling_area_and_restores_geometry() {
+    let (mut f, id, surface, pointer) = setup("");
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    let tiled_size = configure(&mut f, id, &surface).size;
+    f.niri().layout.toggle_window_floating(None);
+    f.double_roundtrip(id);
+    f.client(id).window(&surface).set_size(640, 480);
+    f.client(id).window(&surface).ack_last_and_commit();
+    f.double_roundtrip(id);
+    let original = floating_geometry(&mut f);
+    for _ in 0..3 {
+        expand_double_click(&mut f, id, &surface, &pointer);
+        let expanded = floating_geometry(&mut f);
+        assert_eq!((expanded.0, expanded.1), tiled_size);
+        assert_eq!((expanded.2, expanded.3), (16., 56.));
+        expand_double_click(&mut f, id, &surface, &pointer);
+        assert_eq!(floating_geometry(&mut f), original);
+    }
+}
+
+#[test]
+fn titlebar_floating_expansion_follows_settings_and_keeps_restore_geometry() {
+    let (mut f, id, surface, pointer) = setup("");
+    f.niri().layout.toggle_window_floating(None);
+    f.double_roundtrip(id);
+    f.client(id).window(&surface).set_size(640, 480);
+    f.client(id).window(&surface).ack_last_and_commit();
+    f.double_roundtrip(id);
+    let original = floating_geometry(&mut f);
+    expand_double_click(&mut f, id, &surface, &pointer);
+    let config = Config::parse_mem(
+        "layout { titlebar-double-click-to-column; gaps 24; struts { top 80; bottom 30; }; }",
+    )
+    .unwrap();
+    f.niri().layout.update_config(&config);
+    f.double_roundtrip(id);
+    assert_eq!(configure(&mut f, id, &surface).size, (1872, 922));
+    ack(&mut f, id, &surface);
+    let expanded = floating_geometry(&mut f);
+    assert_eq!((expanded.2, expanded.3), (24., 104.));
+    expand_double_click(&mut f, id, &surface, &pointer);
+    assert_eq!(floating_geometry(&mut f), original);
+}
+
+#[test]
+fn titlebar_floating_expansion_survives_minimize_and_native_maximize() {
+    let (mut f, id, surface, pointer) = setup("");
+    f.niri().layout.toggle_window_floating(None);
+    f.double_roundtrip(id);
+    f.client(id).window(&surface).set_size(640, 480);
+    f.client(id).window(&surface).ack_last_and_commit();
+    f.double_roundtrip(id);
+    let original = floating_geometry(&mut f);
+    expand_double_click(&mut f, id, &surface, &pointer);
+    let expanded = floating_geometry(&mut f);
+    let window_id = f.niri().layout.windows().next().unwrap().1.id();
+    assert!(f.niri_state().minimize_window(Some(window_id)));
+    f.double_roundtrip(id);
+    assert!(f.niri_state().restore_window(Some(window_id), None, true));
+    f.double_roundtrip(id);
+    ack(&mut f, id, &surface);
+    assert_eq!(floating_geometry(&mut f), expanded);
+    // Native buttons may still maximize to the screen, then return to the expanded float.
+    f.niri().titlebar_clicks.clear();
+    f.client(id).window(&surface).set_maximized();
+    f.double_roundtrip(id);
+    assert!(configure(&mut f, id, &surface)
+        .states
+        .contains(&xdg_toplevel::State::Maximized));
+    ack(&mut f, id, &surface);
+    f.client(id).window(&surface).unset_maximized();
+    f.double_roundtrip(id);
+    ack(&mut f, id, &surface);
+    assert_eq!(floating_geometry(&mut f), expanded);
+    expand_double_click(&mut f, id, &surface, &pointer);
+    assert_eq!(floating_geometry(&mut f), original);
+}
+
+#[test]
+fn titlebar_floating_expansion_drag_restores_size_and_stays_floating() {
+    use smithay::utils::Point;
+    let (mut f, id, surface, pointer) = setup("");
+    f.niri().layout.toggle_window_floating(None);
+    f.double_roundtrip(id);
+    f.client(id).window(&surface).set_size(640, 480);
+    f.client(id).window(&surface).ack_last_and_commit();
+    f.double_roundtrip(id);
+    expand_double_click(&mut f, id, &surface, &pointer);
+    let output = f.niri_output(1);
+    let window = f.niri().layout.windows().next().unwrap().1.window.clone();
+    assert!(f.niri().layout.interactive_move_begin(
+        window.clone(),
+        &output,
+        Point::from((100., 75.))
+    ));
+    assert!(f.niri().layout.interactive_move_update(
+        &window,
+        (50., 50.).into(),
+        output,
+        (150., 125.).into()
+    ));
+    f.double_roundtrip(id);
+    assert_eq!(configure(&mut f, id, &surface).size, (640, 480));
+    ack(&mut f, id, &surface);
+    f.niri().layout.interactive_move_end(&window);
+    f.double_roundtrip(id);
+    let geometry = floating_geometry(&mut f);
+    assert_eq!((geometry.0, geometry.1), (640, 480));
 }
