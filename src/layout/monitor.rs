@@ -133,6 +133,13 @@ pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
     Floating,
+    EdgeSnap(EdgeSnapSide),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EdgeSnapSide {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

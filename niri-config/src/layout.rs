@@ -29,6 +29,8 @@ pub struct Layout {
     pub floating_windows_follow_parent: bool,
     /// Keep floating tiles below the same top edge as normal tiled windows.
     pub floating_windows_match_tiling_top: bool,
+    /// Drop floating windows at either output edge into half-width tiling columns.
+    pub floating_windows_edge_snap: bool,
     pub empty_workspace_above_first: bool,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
@@ -58,6 +60,7 @@ impl Default for Layout {
             floating_windows_follow_focus: false,
             floating_windows_follow_parent: false,
             floating_windows_match_tiling_top: false,
+            floating_windows_edge_snap: false,
             empty_workspace_above_first: false,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
@@ -88,6 +91,7 @@ impl MergeWith<LayoutPart> for Layout {
             floating_windows_follow_focus,
             floating_windows_follow_parent,
             floating_windows_match_tiling_top,
+            floating_windows_edge_snap,
             empty_workspace_above_first,
             gaps,
         );
@@ -149,6 +153,8 @@ pub struct LayoutPart {
     pub floating_windows_follow_parent: Option<Flag>,
     #[knuffel(child)]
     pub floating_windows_match_tiling_top: Option<Flag>,
+    #[knuffel(child)]
+    pub floating_windows_edge_snap: Option<Flag>,
     #[knuffel(child)]
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
