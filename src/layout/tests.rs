@@ -19,6 +19,7 @@ mod animations;
 mod fullscreen;
 mod minimized;
 mod floating_stacking;
+mod floating_top_boundary;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {

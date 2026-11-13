@@ -26,3 +26,27 @@ partition windows as raised floats, scrolling windows, then lowered floats.
 To make dialogs follow their tiled or floating owner as a group, also enable
 `floating-windows-follow-parent`. See [Floating window families](../FLOATING-WINDOW-FAMILIES.md)
 for parent discovery, conservative app-id fallback, fullscreen behavior and limitations.
+
+## Floating-window top boundary
+
+```kdl
+layout {
+    floating-windows-match-tiling-top
+}
+```
+
+This optional setting keeps ordinary floating tiles below the same top edge as
+normal tiled windows. Both use the compositor's current panel-reserved work area,
+the layout's top strut and outer gap, with the same output-scale rounding.
+There is no separate numeric floating boundary to keep in sync.
+
+Changing Clavis bar thickness, edge margin or exclusive-zone offset updates this
+edge through layer-shell, including during an active drag. Removing the reserved
+area (for example, hiding the bar or enabling overlay mode) updates both layouts.
+Horizontal and bottom movement retain their existing limits.
+
+The constraint applies to command moves, placement, resize updates, normal-view
+pointer dragging, and floating movement animations. Overview drag previews stay
+free to move between workspace thumbnails; the dropped window is constrained in
+the destination workspace. Native maximize and fullscreen retain their existing
+behavior. The setting is off by default and supports output/workspace overrides.

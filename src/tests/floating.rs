@@ -1364,3 +1364,68 @@ fn repeated_size_request() {
         @""
     );
 }
+
+#[test]
+fn floating_top_boundary_tracks_real_panel_updates_during_drag() {
+    use niri_ipc::PositionChange;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
+    use super::client::LayerConfigureProps;
+
+    let config = Config::parse_mem(r#"
+        layout {
+            floating-windows-match-tiling-top
+            gaps 3
+            struts { top -3; }
+            border { off; }
+        }
+        animations { off; }
+        window-rule { open-floating true; }
+    "#).unwrap();
+    let (mut f, id, _) = set_up_with_config(config);
+    let layer = f.client(id).create_layer(None, Layer::Top, "test-dynamic-top-bar");
+    let panel = layer.surface.clone();
+    layer.set_configure_props(LayerConfigureProps {
+        anchor: Some(Anchor::Left | Anchor::Right | Anchor::Top),
+        size: Some((0, 30)),
+        exclusive_zone: Some(30),
+        ..Default::default()
+    });
+    layer.commit();
+    f.roundtrip(id);
+    let layer = f.client(id).layer(&panel);
+    layer.attach_new_buffer();
+    layer.set_size(1920, 30);
+    layer.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    let output = f.niri_output(1);
+    let niri = f.niri();
+    let mapped = niri.layout.windows().next().unwrap().1;
+    let window = mapped.window.clone();
+    let server_surface = mapped.toplevel().wl_surface().clone();
+    niri.layout.move_floating_window(Some(&window), PositionChange::SetFixed(100.), PositionChange::SetFixed(100.), false);
+    f.niri_complete_animations();
+    let start = f.niri().layout.window_render_location(&server_surface).unwrap() + Point::from((20., 20.));
+    assert!(f.niri().layout.interactive_move_begin(window.clone(), &output, start));
+    assert!(f.niri().layout.interactive_move_update(&window, (0., -1000.).into(), output, (120., 0.).into()));
+    f.niri_complete_animations();
+    assert_eq!(f.niri().layout.window_render_location(&server_surface).unwrap().y, 30.);
+
+    // These are actual layer-shell commits, just like changing the Clavis settings.
+    // The pointer stays still: the active drag must use the updated reserved area.
+    for reserved in [54, 12, 0, 40] {
+        let layer = f.client(id).layer(&panel);
+        layer.set_configure_props(LayerConfigureProps {
+            exclusive_zone: Some(reserved),
+            ..Default::default()
+        });
+        layer.commit();
+        f.double_roundtrip(id);
+        f.niri_complete_animations();
+        assert_eq!(f.niri().layout.window_render_location(&server_surface).unwrap().y, f64::from(reserved));
+    }
+    f.niri().layout.interactive_move_end(&window);
+    f.niri_complete_animations();
+    assert_eq!(f.niri().layout.window_render_location(&server_surface).unwrap().y, 40.);
+}
