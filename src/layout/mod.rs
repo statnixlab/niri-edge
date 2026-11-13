@@ -450,6 +450,8 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) tile: Tile<W>,
     /// Output where the window is currently located/rendered.
     pub(self) output: Output,
+    /// Current panel-reserved working area, refreshed on layer-shell changes.
+    pub(self) working_area: Rectangle<f64, Logical>,
     /// Current pointer position within output.
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
     /// Window column width.
@@ -635,9 +637,16 @@ impl<W: LayoutElement> InteractiveMoveData<W> {
             window_size.w * self.pointer_ratio_within_window.0,
             window_size.h * self.pointer_ratio_within_window.1,
         ));
-        let pos = self.pointer_pos_within_output
+        let mut pos = self.pointer_pos_within_output
             - (pointer_offset_within_window + self.tile.window_loc() - self.tile.render_offset())
                 .upscale(zoom);
+        // Overview uses scaled workspace previews; constrain the normal output-local drag.
+        // Settled floating positions are constrained separately, including overview drops.
+        if self.is_floating && zoom == 1. {
+            if let Some(top) = floating::top_boundary(self.working_area, scale.y, self.tile.options()) {
+                pos.y = pos.y.max((top * scale.y).ceil() / scale.y);
+            }
+        }
         // Round to physical pixels.
         pos.to_physical_precise_round(scale).to_logical(scale)
     }
@@ -1583,6 +1592,11 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         mon.update_output_size();
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            if &move_.output == output {
+                move_.working_area = workspace::compute_working_area(output);
+            }
+        }
     }
 
     pub fn scroll_amount_to_activate(&self, window: &W::Id) -> f64 {
@@ -4196,9 +4210,11 @@ impl<W: LayoutElement> Layout<W> {
                     tile.hold_alpha_animation_after_done();
                 }
 
+                let working_area = workspace::compute_working_area(&output);
                 let mut data = InteractiveMoveData {
                     tile,
                     output,
+                    working_area,
                     pointer_pos_within_output,
                     width,
                     is_full_width,
@@ -4247,6 +4263,7 @@ impl<W: LayoutElement> Layout<W> {
                         output.current_transform(),
                     );
                     move_.output = output.clone();
+                    move_.working_area = workspace::compute_working_area(&output);
                     self.focus_output(&output);
 
                     move_.output_config = self
