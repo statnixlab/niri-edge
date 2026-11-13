@@ -77,6 +77,7 @@ use crate::window::ResolvedWindowRules;
 
 pub mod closing_window;
 pub mod floating;
+mod floating_family;
 pub mod focus_ring;
 pub mod insert_hint_element;
 pub mod minimize_animation;
@@ -326,6 +327,16 @@ pub trait LayoutElement {
     }
 
     fn is_child_of(&self, parent: &Self) -> bool;
+
+    /// Whether the client declared a parent, even if it is on another workspace or unmapped.
+    fn has_parent(&self) -> bool {
+        false
+    }
+
+    /// Application identity used only as a conservative fallback for unparented floating windows.
+    fn app_id(&self) -> Option<String> {
+        None
+    }
 
     fn rules(&self) -> &ResolvedWindowRules;
 

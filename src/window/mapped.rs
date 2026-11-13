@@ -1373,6 +1373,23 @@ impl LayoutElement for Mapped {
         self.toplevel().parent().as_ref() == Some(parent.toplevel().wl_surface())
     }
 
+    fn has_parent(&self) -> bool {
+        self.toplevel().parent().is_some()
+    }
+
+    fn app_id(&self) -> Option<String> {
+        with_states(self.toplevel().wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .app_id
+                .clone()
+        })
+    }
+
     fn refresh(&self) {
         self.window.refresh();
     }

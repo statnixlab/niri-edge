@@ -22,3 +22,7 @@ The setting is disabled by default and supports per-workspace layout overrides.
 Focus-following pointer motion does not raise windows by itself. Rendering,
 closing animations, pointer hit testing and resize-edge targeting consistently
 partition windows as raised floats, scrolling windows, then lowered floats.
+
+To make dialogs follow their tiled or floating owner as a group, also enable
+`floating-windows-follow-parent`. See [Floating window families](../FLOATING-WINDOW-FAMILIES.md)
+for parent discovery, conservative app-id fallback, fullscreen behavior and limitations.
