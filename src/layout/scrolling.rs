@@ -5672,7 +5672,7 @@ fn compute_new_view_offset(
     }
 }
 
-fn compute_working_area(
+pub(super) fn compute_working_area(
     parent_area: Rectangle<f64, Logical>,
     scale: f64,
     struts: Struts,

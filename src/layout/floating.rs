@@ -93,6 +93,9 @@ struct Data {
     /// Cached actual size of the tile.
     size: Size<f64, Logical>,
 
+    /// Resolved top edge shared with the normal tiling layout.
+    top_boundary: Option<f64>,
+
     /// Working area used for conversions.
     working_area: Rectangle<f64, Logical>,
 }
@@ -102,12 +105,14 @@ impl Data {
         working_area: Rectangle<f64, Logical>,
         tile: &Tile<W>,
         logical_pos: Point<f64, Logical>,
+        top_boundary: Option<f64>,
     ) -> Self {
         let mut rv = Self {
             above_tiling: true,
             pos: Point::default(),
             logical_pos: Point::default(),
             size: Size::default(),
+            top_boundary,
             working_area,
         };
         rv.update(tile);
@@ -159,15 +164,20 @@ impl Data {
         );
         logical_pos += self.working_area.loc;
 
+        if let Some(top) = self.top_boundary {
+            logical_pos.y = logical_pos.y.max(top);
+        }
+
         self.logical_pos = logical_pos;
     }
 
-    pub fn update_config(&mut self, working_area: Rectangle<f64, Logical>) {
-        if self.working_area == working_area {
+    pub fn update_config(&mut self, working_area: Rectangle<f64, Logical>, top_boundary: Option<f64>) {
+        if self.working_area == working_area && self.top_boundary == top_boundary {
             return;
         }
 
         self.working_area = working_area;
+        self.top_boundary = top_boundary;
         self.recompute_logical_pos();
     }
 
@@ -235,7 +245,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         for (tile, data) in zip(&mut self.tiles, &mut self.data) {
             tile.update_config(view_size, scale, options.clone());
             data.update(tile);
-            data.update_config(working_area);
+            data.update_config(working_area, top_boundary(working_area, scale, &options));
         }
 
         self.view_size = view_size;
@@ -315,8 +325,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
+        let top_boundary = top_boundary(self.working_area, self.scale, &self.options);
         self.tiles_with_offsets().map(move |(tile, offset)| {
-            let pos = offset + tile.render_offset();
+            let mut pos = offset + tile.render_offset();
+            if let Some(top) = top_boundary {
+                pos.y = pos.y.max((top * scale).ceil() / scale);
+            }
             // Round to physical pixels.
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
             (tile, pos)
@@ -328,8 +342,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
+        let top_boundary = top_boundary(self.working_area, self.scale, &self.options);
         self.tiles_with_offsets_mut().map(move |(tile, offset)| {
             let mut pos = offset + tile.render_offset();
+            if let Some(top) = top_boundary {
+                pos.y = pos.y.max((top * scale).ceil() / scale);
+            }
             // Round to physical pixels.
             if round {
                 pos = pos.to_physical_precise_round(scale).to_logical(scale);
@@ -517,7 +535,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             center_preferring_top_left_in_area(self.working_area, tile.tile_size())
         });
 
-        let data = Data::new(self.working_area, &tile, pos);
+        let data = Data::new(
+            self.working_area, &tile, pos,
+            top_boundary(self.working_area, self.scale, &self.options),
+        );
         self.data.insert(idx, data);
         self.tiles.insert(idx, tile);
 
@@ -1461,7 +1482,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
             let mut data2 = *data;
             data2.update(tile);
-            data2.update_config(self.working_area);
+            data2.update_config(
+                self.working_area,
+                top_boundary(self.working_area, self.scale, &self.options),
+            );
             assert_eq!(data, &data2, "tile data must be up to date");
 
             for tile_below in &self.tiles[i + 1..] {
@@ -1509,4 +1533,16 @@ fn resolve_preset_size(preset: PresetSize, view_size: f64) -> ResolvedSize {
         PresetSize::Proportion(proportion) => ResolvedSize::Tile(view_size * proportion),
         PresetSize::Fixed(width) => ResolvedSize::Window(f64::from(width)),
     }
+}
+
+/// Share the tiling layout's work-area, strut rounding and outer gap calculation.
+pub(super) fn top_boundary(
+    working_area: Rectangle<f64, Logical>,
+    scale: f64,
+    options: &Options,
+) -> Option<f64> {
+    options.layout.floating_windows_match_tiling_top.then(|| {
+        super::scrolling::compute_working_area(working_area, scale, options.layout.struts).loc.y
+            + options.layout.gaps
+    })
 }
