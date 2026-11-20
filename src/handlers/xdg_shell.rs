@@ -717,7 +717,11 @@ impl XdgShellHandler for State {
                             state.states.unset(xdg_toplevel::State::Maximized);
                         });
 
-                        let is_floating = rules.compute_open_floating(&toplevel);
+                        let is_floating = self.niri.window_layout_memory.open_floating(
+                            &rules,
+                            &toplevel,
+                            self.niri.config.borrow().layout.remember_window_layout,
+                        );
                         let configure_width = if is_floating {
                             *floating_width
                         } else if *is_full_width {
@@ -928,7 +932,11 @@ impl XdgShellHandler for State {
                             }
                         });
 
-                        let is_floating = rules.compute_open_floating(&toplevel);
+                        let is_floating = self.niri.window_layout_memory.open_floating(
+                            &rules,
+                            &toplevel,
+                            self.niri.config.borrow().layout.remember_window_layout,
+                        );
                         let configure_width = if is_floating {
                             *floating_width
                         } else if *is_full_width {
@@ -1004,6 +1012,7 @@ impl XdgShellHandler for State {
 
         self.niri.window_mru_ui.remove_window(id);
         self.niri.layout.forget_window_animation_targets(&window);
+        self.niri.remember_window_layouts();
         self.niri.layout.remove_window(&window, transaction.clone());
 
         let surface = surface.wl_surface();
@@ -1252,7 +1261,11 @@ impl State {
         let mut height = None;
         let mut floating_height = None;
         let is_full_width = rules.open_maximized.unwrap_or(false);
-        let is_floating = rules.compute_open_floating(toplevel);
+        let is_floating = self.niri.window_layout_memory.open_floating(
+            &rules,
+            toplevel,
+            self.niri.config.borrow().layout.remember_window_layout,
+        );
 
         // Tell the surface the preferred size and bounds for its likely output.
         let ws = rules

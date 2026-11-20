@@ -2012,6 +2012,7 @@ mod tests {
                 floating_windows_edge_snap: false,
                 floating_windows_detach_on_mod_drag: false,
                 floating_windows_restore_normal_size: false,
+                remember_window_layout: false,
                 empty_workspace_above_first: false,
                 default_column_display: Tabbed,
                 gaps: 8.0,
@@ -2359,6 +2360,7 @@ mod tests {
                     open_floating: Some(
                         false,
                     ),
+                    remember_window_layout: None,
                     open_focused: Some(
                         true,
                     ),

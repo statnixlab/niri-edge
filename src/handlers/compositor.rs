@@ -157,7 +157,11 @@ impl CompositorHandler for State {
                     // The GTK about dialog sets min/max size after the initial configure but
                     // before mapping, so we need to compute open_floating at the last possible
                     // moment, that is here.
-                    let is_floating = rules.compute_open_floating(toplevel);
+                    let is_floating = self.niri.window_layout_memory.open_floating(
+                        &rules,
+                        toplevel,
+                        self.niri.config.borrow().layout.remember_window_layout,
+                    );
 
                     // Figure out if we should activate the window.
                     let activate = rules.open_focused.map(|focus| {
@@ -317,6 +321,7 @@ impl CompositorHandler for State {
 
                     self.niri.window_mru_ui.remove_window(id);
                     self.niri.layout.forget_window_animation_targets(&window);
+                    self.niri.remember_window_layouts();
                     self.niri.layout.remove_window(&window, transaction.clone());
                     self.add_default_dmabuf_pre_commit_hook(surface);
 
