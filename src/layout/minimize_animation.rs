@@ -121,7 +121,7 @@ pub struct MinimizeAnimation<I> {
     output_scale: f64,
     output_transform: Transform,
     normal: Image,
-    blocked: Image,
+    blocked: Option<Image>,
     blocked_background: Option<Image>,
     block_out_from: Option<BlockOutFrom>,
     anim: Animation,
@@ -163,7 +163,9 @@ impl<I> MinimizeAnimation<I> {
             })
         };
         let normal = bake(snapshot.contents)?;
-        let blocked = bake(snapshot.blocked_out_contents)?;
+        let blocked = (!RenderTarget::Screencast.should_hide(snapshot.block_out_from))
+            .then(|| bake(snapshot.blocked_out_contents))
+            .transpose()?;
         let blocked_background = snapshot
             .contents_with_blocked_out_bg
             .map(bake)
@@ -197,9 +199,9 @@ impl<I> MinimizeAnimation<I> {
         interpolate(from, to, self.anim.clamped_value())
     }
 
-    pub fn render(&self, target: RenderTarget) -> MinimizeAnimationRenderElement {
+    pub fn render(&self, target: RenderTarget) -> Option<MinimizeAnimationRenderElement> {
         let image = if target.should_block_out(self.block_out_from) {
-            &self.blocked
+            self.blocked.as_ref()?
         } else if target != RenderTarget::Output {
             self.blocked_background.as_ref().unwrap_or(&self.normal)
         } else {
@@ -230,18 +232,18 @@ impl<I> MinimizeAnimation<I> {
             .clamp(0., 1.);
             let genie_opacity = t * t * (3. - 2. * t);
             if let Some(element) = self.render_genie(image, genie_opacity as f32, p) {
-                return element.into();
+                return Some(element.into());
             }
         }
-        PrimaryGpuTextureRenderElement(TextureRenderElement::from_texture_buffer(
+        let element = PrimaryGpuTextureRenderElement(TextureRenderElement::from_texture_buffer(
             image.buffer.clone(),
             location,
             opacity as f32,
             Some(Rectangle::from_size(image.buffer.logical_size())),
             Some(size),
             Kind::Unspecified,
-        ))
-        .into()
+        ));
+        Some(element.into())
     }
 
     fn render_genie(
@@ -570,7 +572,9 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         for animation in self.minimize_animations.iter().rev() {
             if animation.output == *output {
-                push(animation.render(target));
+                if let Some(element) = animation.render(target) {
+                    push(element);
+                }
             }
         }
     }
