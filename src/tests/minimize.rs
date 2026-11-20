@@ -656,3 +656,119 @@ fn minimizing_releases_tablet_grabs_and_refreshes_hover_focus() {
         assert!(tool.grab_start_data().unwrap().focus.is_none());
     }
 }
+
+fn mru_select(f: &mut Fixture, id: MappedId, scope: niri_config::MruScope) {
+    use niri_config::{Action, MruDirection};
+    use smithay::backend::input::InputTime;
+
+    let advance = Action::MruAdvance {
+        direction: MruDirection::Forward,
+        scope: Some(scope),
+        filter: None,
+    };
+    f.niri_state()
+        .do_action(advance.clone(), false, InputTime::now());
+    let count = f.niri().layout.managed_windows().count();
+    for _ in 0..count {
+        if f.niri().window_mru_ui.current_window_id() == Some(id) {
+            return;
+        }
+        f.niri_state()
+            .do_action(advance.clone(), false, InputTime::now());
+    }
+    panic!("minimized window missing from MRU in {scope:?} scope");
+}
+
+#[test]
+fn mru_minimized_cancel_and_confirm_in_every_scope() {
+    use niri_config::{Action, MruScope};
+    use smithay::backend::input::InputTime;
+
+    for scope in [MruScope::All, MruScope::Workspace, MruScope::Output] {
+        for floating in [false, true] {
+            let mut f = Fixture::new();
+            f.add_output(1, (1280, 720));
+            f.add_output(2, (1280, 720));
+            let client = f.add_client();
+            let (_, id) = map_window(&mut f, client, false);
+            let window = f.niri().find_window_by_id(id).unwrap();
+            f.niri().layout.set_window_floating(Some(&window), floating);
+            assert!(f.niri_state().minimize_window(Some(id)));
+            f.niri_focus_output(2);
+            map_window(&mut f, client, false);
+            let visible_id = f.niri().layout.focus().unwrap().id();
+            mru_select(&mut f, id, scope);
+            assert!(f.niri().layout.is_minimized(&window));
+            f.niri_state()
+                .do_action(Action::MruCancel, false, InputTime::now());
+            assert!(f.niri().layout.is_minimized(&window));
+            assert_eq!(f.niri().layout.focus().unwrap().id(), visible_id);
+
+            mru_select(&mut f, id, scope);
+            f.niri_state()
+                .do_action(Action::MruConfirm, false, InputTime::now());
+            f.double_roundtrip(client);
+            assert!(!f.niri().layout.is_minimized(&window));
+            assert_eq!(f.niri().layout.focus().unwrap().id(), id);
+            assert_eq!(f.niri().layout.focus().unwrap().is_floating(), floating);
+            let output = f.niri_output(2);
+            assert_eq!(f.niri().layout.active_output(), Some(&output));
+            assert_eq!(
+                f.niri()
+                    .layout
+                    .active_workspace()
+                    .unwrap()
+                    .windows()
+                    .count(),
+                2
+            );
+        }
+    }
+}
+
+#[test]
+fn mru_minimized_only_window_can_update_close_and_disappear() {
+    use niri_config::{Action, MruScope};
+    use smithay::backend::input::InputTime;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1280, 720));
+    let client = f.add_client();
+    let (surface, id) = map_window(&mut f, client, true);
+    mru_select(&mut f, id, MruScope::All);
+    let window = f.client(client).window(&surface);
+    window.set_title("updated while minimized in MRU");
+    window.set_size(450, 250);
+    window.attach_new_buffer();
+    window.commit();
+    f.double_roundtrip(client);
+    assert_eq!(f.niri().window_mru_ui.current_window_id(), Some(id));
+    assert_eq!(f.niri().layout.windows().count(), 0);
+    f.niri_state()
+        .do_action(Action::MruCloseCurrentWindow, false, InputTime::now());
+    f.double_roundtrip(client);
+    assert!(f.client(client).window(&surface).close_requested);
+    f.client(client).window(&surface).xdg_toplevel.destroy();
+    f.double_roundtrip(client);
+    assert!(!f.niri().window_mru_ui.is_open());
+    assert!(f.niri().find_window_by_id(id).is_none());
+}
+
+#[test]
+fn mru_minimized_during_switching_stays_selectable() {
+    use niri_config::{Action, MruScope};
+    use smithay::backend::input::InputTime;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1280, 720));
+    let client = f.add_client();
+    let (_, id) = map_window(&mut f, client, false);
+    mru_select(&mut f, id, MruScope::All);
+    assert!(f.niri_state().minimize_window(Some(id)));
+    assert!(f.niri().window_mru_ui.is_open());
+    assert_eq!(f.niri().window_mru_ui.current_window_id(), Some(id));
+    f.niri_state()
+        .do_action(Action::MruConfirm, false, InputTime::now());
+    assert_eq!(f.niri().layout.focus().unwrap().id(), id);
+    assert_eq!(f.niri().layout.windows().count(), 1);
+}
