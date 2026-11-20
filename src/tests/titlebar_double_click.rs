@@ -360,3 +360,104 @@ fn titlebar_floating_expansion_drag_restores_size_and_stays_floating() {
     let geometry = floating_geometry(&mut f);
     assert_eq!((geometry.0, geometry.1), (640, 480));
 }
+
+#[test]
+fn titlebar_double_click_survives_pointer_motion_before_client_request() {
+    let (mut f, id, surface, pointer) = setup("");
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    let column = configure(&mut f, id, &surface).size;
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    click(&mut f, id, &surface, &pointer);
+    click(&mut f, id, &surface, &pointer);
+    // The application handles the double click asynchronously. The user has
+    // already released the button and moved the pointer before its request arrives.
+    let pos = f.niri().seat.get_pointer().unwrap().current_location();
+    pointer.motion_absolute(0, (pos.x + 30.) as u32, pos.y as u32, 1920, 1080);
+    pointer.frame();
+    f.double_roundtrip(id);
+    f.client(id).window(&surface).set_maximized();
+    f.double_roundtrip(id);
+    let result = configure(&mut f, id, &surface);
+    assert_eq!(result.size, column);
+    assert!(!result.states.contains(&xdg_toplevel::State::Maximized));
+}
+
+#[test]
+fn titlebar_double_click_duplicate_client_requests_do_not_fall_back_to_native() {
+    let (mut f, id, surface, pointer) = setup("");
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    let column = configure(&mut f, id, &surface).size;
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    click(&mut f, id, &surface, &pointer);
+    click(&mut f, id, &surface, &pointer);
+    let window = f.client(id).window(&surface);
+    window.set_maximized();
+    window.set_maximized();
+    f.double_roundtrip(id);
+    let result = configure(&mut f, id, &surface);
+    assert_eq!(result.size, column);
+    assert!(!result.states.contains(&xdg_toplevel::State::Maximized));
+}
+
+#[test]
+fn titlebar_floating_duplicate_requests_restore_original_geometry() {
+    for restore_with_unmaximize in [false, true] {
+        let (mut f, id, surface, pointer) = setup("");
+        f.niri().layout.toggle_window_floating(None);
+        f.double_roundtrip(id);
+        f.client(id).window(&surface).set_size(640, 480);
+        f.client(id).window(&surface).ack_last_and_commit();
+        f.double_roundtrip(id);
+        let original = floating_geometry(&mut f);
+        for _ in 0..2 {
+            click(&mut f, id, &surface, &pointer);
+            click(&mut f, id, &surface, &pointer);
+            let window = f.client(id).window(&surface);
+            window.set_maximized();
+            window.set_maximized();
+            f.double_roundtrip(id);
+            assert!(!configure(&mut f, id, &surface)
+                .states
+                .contains(&xdg_toplevel::State::Maximized));
+            ack(&mut f, id, &surface);
+            let expanded = floating_geometry(&mut f);
+            assert_eq!((expanded.0, expanded.1), (1888, 978));
+            click(&mut f, id, &surface, &pointer);
+            click(&mut f, id, &surface, &pointer);
+            let window = f.client(id).window(&surface);
+            for _ in 0..2 {
+                if restore_with_unmaximize {
+                    window.unset_maximized();
+                } else {
+                    window.set_maximized();
+                }
+            }
+            f.double_roundtrip(id);
+            assert!(!configure(&mut f, id, &surface)
+                .states
+                .contains(&xdg_toplevel::State::Maximized));
+            ack(&mut f, id, &surface);
+            assert_eq!(floating_geometry(&mut f), original);
+        }
+    }
+}
+
+#[test]
+fn titlebar_native_button_after_double_click_remains_native() {
+    let (mut f, id, surface, pointer) = setup("");
+    click(&mut f, id, &surface, &pointer);
+    click(&mut f, id, &surface, &pointer);
+    f.client(id).window(&surface).set_maximized();
+    f.double_roundtrip(id);
+    ack(&mut f, id, &surface);
+    click(&mut f, id, &surface, &pointer);
+    f.client(id).window(&surface).set_maximized();
+    f.double_roundtrip(id);
+    let result = configure(&mut f, id, &surface);
+    assert!(result.states.contains(&xdg_toplevel::State::Maximized));
+    assert_eq!(result.size, (1920, 1080));
+}
