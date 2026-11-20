@@ -30,6 +30,8 @@ pub struct MoveGrab {
     gesture: GestureState,
     enable_view_offset: bool,
     move_icon: CursorIcon,
+    /// Decided at button press; releasing modifiers does not change this drag's mode.
+    detach_to_floating: bool,
 
     // Accumulated and applied in frame().
     new_location: Point<f64, Logical>,
@@ -65,6 +67,7 @@ impl MoveGrab {
             enable_view_offset,
             // Moving windows by their titlebars uses the default cursor by default.
             move_icon: move_icon.unwrap_or(CursorIcon::Default),
+            detach_to_floating: false,
             new_location: location,
             event_timestamp: None,
             relative_delta: None,
@@ -73,6 +76,11 @@ impl MoveGrab {
 
     pub fn window(&self) -> &Window {
         &self.window
+    }
+
+    pub fn with_detach_to_floating(mut self, detach: bool) -> Self {
+        self.detach_to_floating = detach;
+        self
     }
 
     pub fn is_move(&self) -> bool {
@@ -131,6 +139,10 @@ impl MoveGrab {
         }
 
         self.gesture = GestureState::Move;
+
+        if self.detach_to_floating {
+            data.niri.layout.detach_interactive_move(&self.window);
+        }
 
         if !self.start_data.is_touch() {
             data.niri

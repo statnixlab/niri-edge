@@ -439,6 +439,7 @@ enum InteractiveMoveState<W: LayoutElement> {
         ///
         /// This helps the pointer remain inside the window as it resizes.
         pointer_ratio_within_window: (f64, f64),
+        detach_to_floating: bool,
     },
     /// Moving; the window is no longer in the layout.
     Moving(InteractiveMoveData<W>),
@@ -2566,6 +2567,7 @@ impl<W: LayoutElement> Layout<W> {
                     window_id,
                     pointer_delta: _,
                     pointer_ratio_within_window: _,
+                    ..
                 } => {
                     assert!(
                         self.has_window(window_id),
@@ -3341,11 +3343,23 @@ impl<W: LayoutElement> Layout<W> {
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
+                if move_.is_floating {
+                    let pos = move_.tile_render_location(1.);
+                    floating::remember_normal_geometry(&mut move_.tile, move_.working_area, pos);
+                }
                 move_.is_floating = !move_.is_floating;
 
                 // When going to floating, restore the floating window size.
                 if move_.is_floating {
-                    let floating_size = move_.tile.floating_window_size;
+                    let floating_size = if move_.tile.options().layout.floating_windows_restore_normal_size {
+                        let scale = move_.output.current_scale().fractional_scale();
+                        let size = floating::normal_restore_size(&move_.tile, move_.working_area, scale, move_.tile.options());
+                        move_.tile.floating_expansion_restore = None;
+                        move_.tile.floating_window_size = Some(size);
+                        Some(size)
+                    } else {
+                        move_.tile.floating_window_size
+                    };
                     let win = move_.tile.window_mut();
                     let mut size =
                         floating_size.unwrap_or_else(|| win.expected_size().unwrap_or_default());
@@ -4083,6 +4097,7 @@ impl<W: LayoutElement> Layout<W> {
             window_id,
             pointer_delta: Point::from((0., 0.)),
             pointer_ratio_within_window,
+            detach_to_floating: false,
         });
 
         for mon in self.monitors_mut() {
@@ -4097,6 +4112,15 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         true
+    }
+
+    /// Called after the input gesture crosses its movement threshold.
+    pub fn detach_interactive_move(&mut self, window: &W::Id) {
+        if let Some(InteractiveMoveState::Starting { window_id, detach_to_floating, .. }) = &mut self.interactive_move {
+            if window_id == window {
+                *detach_to_floating = true;
+            }
+        }
     }
 
     pub fn interactive_move_update(
@@ -4115,12 +4139,14 @@ impl<W: LayoutElement> Layout<W> {
                 window_id,
                 mut pointer_delta,
                 pointer_ratio_within_window,
+                detach_to_floating,
             } => {
                 if window_id != *window {
                     self.interactive_move = Some(InteractiveMoveState::Starting {
                         window_id,
                         pointer_delta,
                         pointer_ratio_within_window,
+                        detach_to_floating,
                     });
                     return false;
                 }
@@ -4160,9 +4186,10 @@ impl<W: LayoutElement> Layout<W> {
                     window_id: window_id.clone(),
                     pointer_delta,
                     pointer_ratio_within_window,
+                    detach_to_floating,
                 });
 
-                if !is_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
+                if !is_floating && !detach_to_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
                     return true;
                 }
 
@@ -4212,7 +4239,7 @@ impl<W: LayoutElement> Layout<W> {
                     mut tile,
                     width,
                     is_full_width,
-                    is_floating,
+                    mut is_floating,
                 } = self.remove_window(window, Transaction::new()).unwrap();
 
                 tile.stop_move_animations();
@@ -4235,6 +4262,18 @@ impl<W: LayoutElement> Layout<W> {
                     .with_merged_layout(workspace_config.as_ref().map(|(_, c)| c))
                     .adjusted_for_scale(scale);
                 tile.update_config(view_size, scale, Rc::new(options));
+                let working_area = workspace::compute_working_area(&output);
+                if detach_to_floating && !is_floating {
+                    let size = if tile.options().layout.floating_windows_restore_normal_size {
+                        floating::normal_restore_size(&tile, working_area, scale, tile.options())
+                    } else {
+                        tile.floating_window_size.unwrap_or_else(|| tile.window().size())
+                    };
+                    tile.floating_expansion_restore = None;
+                    tile.floating_window_size = Some(size);
+                    tile.window_mut().request_size_once(size, true);
+                    is_floating = true;
+                }
 
                 if is_floating {
                     // Unlock the view in case we locked it moving a fullscreen window that is
@@ -4252,7 +4291,6 @@ impl<W: LayoutElement> Layout<W> {
                     tile.hold_alpha_animation_after_done();
                 }
 
-                let working_area = workspace::compute_working_area(&output);
                 let mut data = InteractiveMoveData {
                     tile,
                     output,
@@ -4495,6 +4533,9 @@ impl<W: LayoutElement> Layout<W> {
                             tile.floating_window_size = Some(size);
                         }
                         tile.floating_expansion_restore = None;
+                        if tile.normal_floating_geometry.is_none() {
+                            floating::remember_normal_geometry(&mut tile, move_.working_area, tile_render_loc);
+                        }
                         mon.add_tile(
                             tile,
                             MonitorAddWindowTarget::Workspace {
@@ -4565,6 +4606,9 @@ impl<W: LayoutElement> Layout<W> {
                         // took place during the move.
                         if let Some(size) = tile.window().expected_size() {
                             tile.floating_window_size = Some(size);
+                            if let Some(pos) = tile.floating_pos {
+                                tile.normal_floating_geometry = Some((size, pos));
+                            }
                         }
 
                         let ws_id = mon.workspaces[ws_idx].id();

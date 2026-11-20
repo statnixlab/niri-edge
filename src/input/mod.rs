@@ -3393,9 +3393,12 @@ impl State {
                         };
                         let start_data = AnyStartData::Pointer(start_data);
                         let icon = CursorIcon::Grabbing;
+                        let detach = !is_overview_open && !mods.shift
+                            && self.niri.config.borrow().layout.floating_windows_detach_on_mod_drag;
                         if let Some(grab) =
                             MoveGrab::new(self, start_data, window.clone(), false, Some(icon))
                         {
+                            let grab = grab.with_detach_to_floating(detach);
                             pointer.set_grab(self, grab, serial, Focus::Clear);
 
                             // Set the cursor to Grabbing right away for Mod+LMB since it doesn't

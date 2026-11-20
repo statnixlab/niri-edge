@@ -1410,7 +1410,7 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating.has_window(window) {
             if is_fullscreen {
                 restore_to_floating = true;
-                self.toggle_window_floating(Some(window));
+                self.toggle_window_floating_inner(Some(window), false);
             } else {
                 // Floating windows are never fullscreen, so this is an unfullscreen request for an
                 // already unfullscreen window.
@@ -1435,7 +1435,7 @@ impl<W: LayoutElement> Workspace<W> {
                 if tile.restore_to_floating {
                     // Unfullscreen and float in one call so it has a chance to notice and request a
                     // (0, 0) size, rather than the scrolling column size.
-                    self.toggle_window_floating(Some(window));
+                    self.toggle_window_floating_inner(Some(window), false);
                     return;
                 }
             }
@@ -1475,7 +1475,7 @@ impl<W: LayoutElement> Workspace<W> {
         if self.floating.has_window(window) {
             if maximize {
                 restore_to_floating = true;
-                self.toggle_window_floating(Some(window));
+                self.toggle_window_floating_inner(Some(window), false);
             } else {
                 // Floating windows are never maximized, so this is an unmaximize request for an
                 // already unmaximized window.
@@ -1495,7 +1495,7 @@ impl<W: LayoutElement> Workspace<W> {
             if tile.window().pending_sizing_mode().is_maximized() && tile.restore_to_floating {
                 // Unmaximize and float in one call so it has a chance to notice and request a
                 // (0, 0) size, rather than the scrolling column size.
-                self.toggle_window_floating(Some(window));
+                self.toggle_window_floating_inner(Some(window), false);
                 return;
             }
         }
@@ -1536,6 +1536,10 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn toggle_window_floating(&mut self, id: Option<&W::Id>) {
+        self.toggle_window_floating_inner(id, true);
+    }
+
+    fn toggle_window_floating_inner(&mut self, id: Option<&W::Id>, restore_normal: bool) {
         let active_id = self.active_window().map(|win| win.id().clone());
         let target_is_active = id.is_none_or(|id| Some(id) == active_id.as_ref());
         let Some(id) = id.cloned().or(active_id) else {
@@ -1564,6 +1568,24 @@ impl<W: LayoutElement> Workspace<W> {
         } else {
             let mut removed = self.scrolling.remove_tile(&id, Transaction::new());
             removed.tile.stop_move_animations();
+
+            if restore_normal && self.options.layout.floating_windows_restore_normal_size {
+                let size = super::floating::normal_restore_size(
+                    &removed.tile, self.working_area, self.scale.fractional_scale(), &self.options,
+                );
+                let center = render_pos + removed.tile.tile_size().to_point().downscale(2.);
+                let new_tile_size = Size::from((
+                    removed.tile.tile_width_for_window_width(f64::from(size.w)),
+                    removed.tile.tile_height_for_window_height(f64::from(size.h)),
+                ));
+                let pos = removed.tile.normal_floating_geometry
+                    .map(|(_, pos)| self.floating.scale_by_working_area(pos))
+                    .unwrap_or_else(|| center - new_tile_size.to_point().downscale(2.));
+                let pos = self.floating.clamp_within_working_area(pos, new_tile_size);
+                removed.tile.floating_pos = Some(self.floating.logical_to_size_frac(pos));
+                removed.tile.floating_window_size = Some(size);
+                removed.tile.floating_expansion_restore = None;
+            }
 
             // Come up with a default floating position close to the tile position.
             let stored_or_default = self.floating.stored_or_default_tile_pos(&removed.tile);
