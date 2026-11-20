@@ -65,6 +65,73 @@ fn minimizes_single_window_without_unmapping_or_recreating_it() {
 }
 
 #[test]
+fn minimized_restore_preserves_selected_layout_type() {
+    for opened_floating in [false, true] {
+        for selected_floating in [false, true] {
+            for settle_before_minimize in [false, true] {
+                let mut layout = check_ops([Op::AddOutput(1), add(1, opened_floating)]);
+                settle(&mut layout);
+                layout.set_window_floating(Some(&1), selected_floating);
+                if settle_before_minimize {
+                    settle(&mut layout);
+                }
+                for _ in 0..3 {
+                    assert_eq!(
+                        layout.active_workspace().unwrap().is_floating(&1),
+                        selected_floating
+                    );
+                    assert!(layout.minimize_window(&1));
+                    assert_eq!(
+                        layout.restore_window(Some(&1), None, ActivateWindow::Yes),
+                        Some(1)
+                    );
+                    settle(&mut layout);
+                    assert_eq!(
+                        layout.active_workspace().unwrap().is_floating(&1),
+                        selected_floating,
+                        "opened_floating={opened_floating}, selected_floating={selected_floating}, settled={settle_before_minimize}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn minimized_fullscreen_and_maximized_keep_underlying_layout_type() {
+    for floating in [false, true] {
+        for maximized in [false, true] {
+            let mut layout = check_ops([Op::AddOutput(1), add(1, !floating)]);
+            settle(&mut layout);
+            layout.set_window_floating(Some(&1), floating);
+            settle(&mut layout);
+            if maximized {
+                layout.set_maximized(&1, true);
+            } else {
+                layout.set_fullscreen(&1, true);
+            }
+            settle(&mut layout);
+            assert!(layout.minimize_window(&1));
+            assert_eq!(
+                layout.restore_window(Some(&1), None, ActivateWindow::Yes),
+                Some(1)
+            );
+            settle(&mut layout);
+            let mode = layout.focus().unwrap().pending_sizing_mode();
+            assert_eq!(mode.is_maximized(), maximized);
+            assert_eq!(mode.is_fullscreen(), !maximized);
+            if maximized {
+                layout.set_maximized(&1, false);
+            } else {
+                layout.set_fullscreen(&1, false);
+            }
+            settle(&mut layout);
+            assert_eq!(layout.active_workspace().unwrap().is_floating(&1), floating);
+        }
+    }
+}
+
+#[test]
 fn minimization_order_is_stable_and_close_removes_queue_entries() {
     let mut layout = check_ops([Op::AddOutput(1), add(1, false), add(2, false), add(3, true)]);
     assert!(layout.minimize_window(&1));

@@ -32,14 +32,21 @@ impl<W: LayoutElement> Layout<W> {
         let Some((_, _, workspace)) = self.workspaces().find(|(_, _, ws)| ws.has_window(id)) else {
             return false;
         };
-        let floating_center = workspace.minimized_floating_center(id);
         let maximized = workspace.is_pending_maximized(id);
         let tile = workspace
             .tiles()
             .find(|tile| tile.window().id() == id)
             .unwrap();
         let currently_floating = workspace.is_floating(id);
-        let is_floating = currently_floating || tile.restore_to_floating;
+        // restore_to_floating describes the normal layout underneath fullscreen/maximized,
+        // not current membership. It may still be set after explicitly tiling a normal window.
+        let is_floating = currently_floating
+            || (tile.restore_to_floating && !tile.window().pending_sizing_mode().is_normal());
+        let floating_center = if is_floating {
+            workspace.minimized_floating_center(id)
+        } else {
+            None
+        };
 
         let Some(mut removed) = self.remove_window(id, Transaction::new()) else {
             return false;
