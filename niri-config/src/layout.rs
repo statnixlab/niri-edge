@@ -31,6 +31,8 @@ pub struct Layout {
     pub floating_windows_match_tiling_top: bool,
     /// Drop floating windows at either output edge into half-width tiling columns.
     pub floating_windows_edge_snap: bool,
+    pub floating_windows_detach_on_mod_drag: bool,
+    pub floating_windows_restore_normal_size: bool,
     pub empty_workspace_above_first: bool,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
@@ -61,6 +63,8 @@ impl Default for Layout {
             floating_windows_follow_parent: false,
             floating_windows_match_tiling_top: false,
             floating_windows_edge_snap: false,
+            floating_windows_detach_on_mod_drag: false,
+            floating_windows_restore_normal_size: false,
             empty_workspace_above_first: false,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
@@ -92,6 +96,8 @@ impl MergeWith<LayoutPart> for Layout {
             floating_windows_follow_parent,
             floating_windows_match_tiling_top,
             floating_windows_edge_snap,
+            floating_windows_detach_on_mod_drag,
+            floating_windows_restore_normal_size,
             empty_workspace_above_first,
             gaps,
         );
@@ -155,6 +161,10 @@ pub struct LayoutPart {
     pub floating_windows_match_tiling_top: Option<Flag>,
     #[knuffel(child)]
     pub floating_windows_edge_snap: Option<Flag>,
+    #[knuffel(child)]
+    pub floating_windows_detach_on_mod_drag: Option<Flag>,
+    #[knuffel(child)]
+    pub floating_windows_restore_normal_size: Option<Flag>,
     #[knuffel(child)]
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]

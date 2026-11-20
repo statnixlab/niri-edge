@@ -79,6 +79,9 @@ pub struct Tile<W: LayoutElement> {
     /// Kept on the tile so minimize, workspace moves and native fullscreen preserve it.
     pub(super) floating_expansion_restore: Option<(Size<i32, Logical>, Point<f64, SizeFrac>)>,
 
+    /// Ordinary floating geometry, never overwritten by tiling or expanded geometry.
+    pub(super) normal_floating_geometry: Option<(Size<i32, Logical>, Point<f64, SizeFrac>)>,
+
     /// Currently selected preset width index when this tile is floating.
     pub(super) floating_preset_width_idx: Option<usize>,
 
@@ -209,6 +212,7 @@ impl<W: LayoutElement> Tile<W> {
             floating_window_size: None,
             floating_pos: None,
             floating_expansion_restore: None,
+            normal_floating_geometry: None,
             floating_preset_width_idx: None,
             floating_preset_height_idx: None,
             open_animation: None,

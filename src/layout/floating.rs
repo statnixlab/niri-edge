@@ -624,6 +624,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
 
         // Store the floating size if we have one.
+        remember_normal_geometry(&mut tile, self.working_area, data.logical_pos);
         if let Some(size) = tile.window().expected_size() {
             tile.floating_window_size = Some(size);
         }
@@ -874,6 +875,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let tile = &mut self.tiles[idx];
             let win = tile.window();
             let size = win.expected_size().unwrap_or_else(|| win.size());
+            tile.normal_floating_geometry = Some((size, self.data[idx].pos));
             tile.floating_expansion_restore = Some((size, self.data[idx].pos));
             self.fit_expanded(idx, true);
         }
@@ -1614,4 +1616,48 @@ pub(super) fn top_boundary(
         super::scrolling::compute_working_area(working_area, scale, options.layout.struts).loc.y
             + options.layout.gaps
     })
+}
+
+/// Remember ordinary geometry without allowing expansion to replace the restore state.
+pub(super) fn remember_normal_geometry<W: LayoutElement>(
+    tile: &mut Tile<W>, area: Rectangle<f64, Logical>, pos: Point<f64, Logical>,
+) {
+    tile.normal_floating_geometry = tile.floating_expansion_restore.or_else(|| {
+        let size = tile.window().expected_size().unwrap_or_else(|| tile.window().size());
+        Some((size, Data::logical_to_size_frac_in_working_area(area, pos)))
+    });
+}
+
+/// Restore per-window ordinary size, or choose a compact first floating size.
+pub(super) fn normal_restore_size<W: LayoutElement>(
+    tile: &Tile<W>, area: Rectangle<f64, Logical>, scale: f64, options: &Options,
+) -> Size<i32, Logical> {
+    let area = super::scrolling::compute_working_area(area, scale, options.layout.struts);
+    let usable: Size<f64, Logical> = Size::from((
+        (area.size.w - options.layout.gaps * 2.).max(1.),
+        (area.size.h - options.layout.gaps * 2.).max(1.),
+    ));
+    let bounds: Size<i32, Logical> = Size::from((
+        tile.window_width_for_tile_width(usable.w).max(1.),
+        tile.window_height_for_tile_height(usable.h).max(1.),
+    )).to_i32_floor();
+    let desired = if let Some((size, _)) = tile.normal_floating_geometry {
+        size
+    } else {
+        let current = tile.window().expected_size().unwrap_or_else(|| tile.window().size());
+        let cap: Size<i32, Logical> = Size::from((
+            tile.window_width_for_tile_width(usable.w * 0.7).max(1.),
+            tile.window_height_for_tile_height(usable.h * 0.7).max(1.),
+        )).to_i32_floor();
+        Size::from((
+            if current.w > 0 { current.w.min(cap.w) } else { cap.w },
+            if current.h > 0 { current.h.min(cap.h) } else { cap.h },
+        ))
+    };
+    let min = tile.window().min_size();
+    let max = tile.window().max_size();
+    Size::from((
+        ensure_min_max_size(desired.w.min(bounds.w).max(1), min.w, max.w),
+        ensure_min_max_size(desired.h.min(bounds.h).max(1), min.h, max.h),
+    ))
 }
