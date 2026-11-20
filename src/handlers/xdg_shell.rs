@@ -38,6 +38,7 @@ use tracing::field::Empty;
 
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
+use crate::input::titlebar_click::MaximizeRequest;
 use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PopupGrabState, State};
@@ -506,10 +507,15 @@ impl XdgShellHandler for State {
                 .layout
                 .workspaces()
                 .any(|(_, _, ws)| ws.is_floating(&window));
-            let double_click = self
-                .niri
-                .titlebar_clicks
-                .take_double_click(mapped_id, get_monotonic_time());
+            let request = self.niri.titlebar_clicks.classify_request(
+                mapped_id, get_monotonic_time(), true,
+            );
+            if request == MaximizeRequest::RepeatedDoubleClick
+                && self.niri.config.borrow().layout.titlebar_double_click_to_column
+            {
+                return;
+            }
+            let double_click = request == MaximizeRequest::DoubleClick;
             let (to_column, floating_double_click) = {
                 let config = self.niri.config.borrow();
                 if config.layout.titlebar_double_click_to_column {
@@ -613,10 +619,15 @@ impl XdgShellHandler for State {
             mapped.set_needs_configure();
 
             let window = mapped.window.clone();
-            let double_click = self
-                .niri
-                .titlebar_clicks
-                .take_double_click(mapped.id(), get_monotonic_time());
+            let request = self.niri.titlebar_clicks.classify_request(
+                mapped.id(), get_monotonic_time(), false,
+            );
+            if request == MaximizeRequest::RepeatedDoubleClick
+                && self.niri.config.borrow().layout.titlebar_double_click_to_column
+            {
+                return;
+            }
+            let double_click = request == MaximizeRequest::DoubleClick;
             let to_column = self
                 .niri
                 .config
