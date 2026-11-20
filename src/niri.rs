@@ -228,6 +228,8 @@ pub struct Niri {
 
     pub config_file_watcher: Option<Watcher>,
 
+    pub window_layout_memory: crate::window_layout_memory::WindowLayoutMemory,
+
     pub event_loop: LoopHandle<'static, State>,
     pub scheduler: Scheduler<()>,
     pub stop_signal: LoopSignal,
@@ -2858,6 +2860,10 @@ impl Niri {
         animation_clock.set_complete_instantly(config_.animations.off);
 
         let layout = Layout::new(animation_clock.clone(), &config_);
+        let memory_path = matches!(backend, Backend::Tty(_))
+            .then(crate::window_layout_memory::WindowLayoutMemory::default_path)
+            .flatten();
+        let window_layout_memory = crate::window_layout_memory::WindowLayoutMemory::new(memory_path);
 
         let (blocker_cleared_tx, blocker_cleared_rx) = mpsc::channel();
 
@@ -3116,6 +3122,7 @@ impl Niri {
             config,
             config_file_output_config,
             config_file_watcher: None,
+            window_layout_memory,
 
             event_loop,
             scheduler,
@@ -4709,6 +4716,41 @@ impl Niri {
         };
 
         self.layout.refresh(layout_is_active);
+        self.remember_window_layouts();
+    }
+
+    pub(crate) fn remember_window_layouts(&mut self) {
+        if self.config.borrow().layout.remember_window_layout {
+            let observations = self
+                .layout
+                .managed_windows()
+                .map(|(_, window)| {
+                    let normal = window.pending_sizing_mode().is_normal()
+                        && !window.is_pending_windowed_fullscreen();
+                    let choice = normal
+                        .then(|| {
+                            crate::window_layout_memory::rememberable_app_id(
+                                window.toplevel(),
+                                window.rules(),
+                            )
+                            .map(|app| {
+                                let floating = self
+                                    .layout
+                                    .workspaces()
+                                    .find(|(_, _, ws)| ws.has_window(&window.window))
+                                    .map(|(_, _, ws)| ws.is_floating(&window.window))
+                                    .unwrap_or_else(|| window.is_floating());
+                                (app, floating)
+                            })
+                        })
+                        .flatten();
+                    (window.id().get(), choice)
+                })
+                .collect::<Vec<_>>();
+            self.window_layout_memory.observe(observations);
+        } else {
+            self.window_layout_memory.reset_observations();
+        }
     }
 
     pub fn refresh_idle_inhibit(&mut self) {

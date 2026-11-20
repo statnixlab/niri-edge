@@ -70,6 +70,9 @@ pub struct ResolvedWindowRules {
     /// Whether the window should open floating.
     pub open_floating: Option<bool>,
 
+    /// Exclude auxiliary windows from application layout memory when false.
+    pub remember_window_layout: Option<bool>,
+
     /// Whether the window should open focused.
     pub open_focused: Option<bool>,
 
@@ -257,6 +260,10 @@ impl ResolvedWindowRules {
 
                 if let Some(x) = rule.open_floating {
                     resolved.open_floating = Some(x);
+                }
+
+                if let Some(x) = rule.remember_window_layout {
+                    resolved.remember_window_layout = Some(x);
                 }
 
                 if let Some(x) = rule.open_focused {
