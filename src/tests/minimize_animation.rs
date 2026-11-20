@@ -1302,3 +1302,38 @@ fn egl_genie_scaled_output_keeps_snapshot_in_logical_coordinates() {
         );
     }
 }
+
+#[test]
+fn egl_mru_minimized_preview_renders_without_restoring() {
+    use niri_config::{Action, MruDirection, MruScope};
+    use smithay::backend::input::InputTime;
+
+    let mut f = setup("recent-windows { open-delay-ms 0; }");
+    let output = f.niri_output(1);
+    let client = f.add_client();
+    let (_, id) = window(&mut f, client, [u32::MAX, 0, 0]);
+    set_time(f.niri(), Duration::ZERO);
+    f.niri_complete_animations();
+    assert!(f.niri_state().minimize_window(Some(id)));
+    f.niri_complete_animations();
+    assert_eq!(red_pixels(&mut f, &output, RenderTarget::Output), 0);
+
+    f.niri_state().do_action(
+        Action::MruAdvance {
+            direction: MruDirection::Forward,
+            scope: Some(MruScope::All),
+            filter: None,
+        },
+        false,
+        InputTime::now(),
+    );
+    f.niri_complete_animations();
+    assert_eq!(f.niri().window_mru_ui.current_window_id(), Some(id));
+    assert!(red_pixels(&mut f, &output, RenderTarget::Output) > 1000);
+    assert_eq!(f.niri().layout.windows().count(), 0);
+    f.niri_state()
+        .do_action(Action::MruCancel, false, InputTime::now());
+    f.niri_complete_animations();
+    assert_eq!(red_pixels(&mut f, &output, RenderTarget::Output), 0);
+    assert_eq!(f.niri().layout.windows().count(), 0);
+}

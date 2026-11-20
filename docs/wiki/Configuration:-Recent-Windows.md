@@ -4,6 +4,11 @@
 
 In this section you can configure the recent windows switcher (Alt-Tab).
 
+The personal NVIDIA build also includes minimized windows. Since they have no
+workspace or output affiliation, they remain available in every scope. Confirming
+a minimized window restores it on the current workspace, preserving its tiled or
+floating mode. Browsing previews or cancelling the switcher leaves it minimized.
+
 Here is an outline of the available settings and their default values:
 
 ```kdl

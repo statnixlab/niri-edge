@@ -1341,7 +1341,7 @@ impl State {
         if let Some(animation) = animation {
             self.niri.layout.start_minimize_animation(animation);
         }
-        self.niri.window_mru_ui.remove_window(id);
+        self.niri.window_mru_ui.update_window(&self.niri.layout, id);
 
         // The detached surface no longer participates in output rendering, which normally
         // clears this cache. Clear it now for idle inhibition and frame callback throttling.
