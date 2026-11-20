@@ -85,6 +85,47 @@ fn xdg_minimize_preserves_identity_and_handles_hidden_commits() {
 }
 
 #[test]
+fn xdg_minimize_restore_preserves_user_selected_layout_type() {
+    for floating in [false, true] {
+        let config = Config::parse_mem("window-rule { open-floating true; }").unwrap();
+        let mut f = Fixture::with_config(config);
+        f.add_output(1, (1280, 720));
+        let client = f.add_client();
+        let (surface, id) = map_window(&mut f, client, false);
+        let window = f.niri().find_window_by_id(id).unwrap();
+        f.niri().layout.set_window_floating(Some(&window), floating);
+        f.double_roundtrip(client);
+        for _ in 0..3 {
+            assert_eq!(
+                f.niri()
+                    .layout
+                    .active_workspace()
+                    .unwrap()
+                    .is_floating(&window),
+                floating
+            );
+            f.client(client)
+                .window(&surface)
+                .xdg_toplevel
+                .set_minimized();
+            f.double_roundtrip(client);
+            assert!(f.niri().layout.is_minimized(&window));
+            assert!(f.niri_state().restore_window(Some(id), None, true));
+            f.double_roundtrip(client);
+            assert_eq!(f.niri().find_window_by_id(id).unwrap(), window);
+            assert_eq!(
+                f.niri()
+                    .layout
+                    .active_workspace()
+                    .unwrap()
+                    .is_floating(&window),
+                floating
+            );
+        }
+    }
+}
+
+#[test]
 fn minimize_before_initial_map_is_remembered() {
     let mut f = Fixture::new();
     f.add_output(1, (1280, 720));
