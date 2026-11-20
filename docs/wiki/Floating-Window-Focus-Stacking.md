@@ -89,3 +89,33 @@ remain in their columns. The window's floating size is retained for a later
 floating toggle. Overview drags and ordinary tiled-window drags keep their normal
 behavior. Snap previews at corners suppress simultaneous workspace edge scrolling.
 The feature is disabled by default and supports output/workspace layout overrides.
+
+## Detach tiled windows with Mod and the left mouse button
+
+```kdl
+layout {
+    floating-windows-detach-on-mod-drag
+    floating-windows-restore-normal-size
+}
+```
+
+With the first option enabled, Mod+left drag detaches a tiled window after the
+normal 8-logical-pixel input threshold. A click or small pointer jitter only
+focuses it. Holding Shift at the initial press keeps the existing tiling drag.
+The chosen mode remains fixed until the mouse button is released, even if Mod
+or Shift is released first. Ordinary titlebar and overview drags are unchanged.
+After detachment the pointer keeps its relative grab position. Edge snapping
+still previews and tiles the window only when the pointer is released at an edge.
+
+The second option makes explicit tiling-to-floating toggles (including Mod+V)
+and drag detachment share a size policy. Restore the last ordinary floating size
+when available; otherwise keep the current size within 70% of the usable width
+and height, without enlarging smaller windows. Application minimum/maximum sizes
+remain authoritative. Remembered geometry is clamped to the destination work
+area rather than repeatedly reduced to 70%.
+
+Ordinary geometry is recorded separately from tiling, titlebar expansion and
+native maximization. Explicit toggles restore its saved position, or shrink
+around the old tiled window's center on the first toggle. Internal native
+maximize/fullscreen restoration retains its existing behavior. Both options
+are off by default. Geometry memory is per live window and lasts for its lifetime.
