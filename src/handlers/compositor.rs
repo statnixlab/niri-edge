@@ -342,8 +342,8 @@ impl CompositorHandler for State {
 
                     if let Some(output) = output {
                         self.niri.queue_redraw(&output);
-                        self.niri.queue_redraw_mru_output();
                     }
+                    self.niri.queue_redraw_mru_output();
                     return;
                 }
 
@@ -369,9 +369,7 @@ impl CompositorHandler for State {
                 }
 
                 // The toplevel remains mapped.
-                if !is_minimized {
-                    self.niri.window_mru_ui.update_window(&self.niri.layout, id);
-                }
+                self.niri.window_mru_ui.update_window(&self.niri.layout, id);
                 self.niri.layout.update_window(&window, serial);
 
                 // Move the toplevel according to the attach offset.
@@ -394,8 +392,8 @@ impl CompositorHandler for State {
 
                 if let Some(output) = output {
                     self.niri.queue_redraw(&output);
-                    self.niri.queue_redraw_mru_output();
                 }
+                self.niri.queue_redraw_mru_output();
                 return;
             }
 
@@ -414,16 +412,14 @@ impl CompositorHandler for State {
             let window = mapped.window.clone();
             let output = output.cloned();
             window.on_commit();
-            if !mapped.is_minimized() {
-                self.niri
-                    .window_mru_ui
-                    .update_window(&self.niri.layout, mapped.id());
-            }
+            self.niri
+                .window_mru_ui
+                .update_window(&self.niri.layout, mapped.id());
             self.niri.layout.update_window(&window, None);
             if let Some(output) = output {
                 self.niri.queue_redraw(&output);
-                self.niri.queue_redraw_mru_output();
             }
+            self.niri.queue_redraw_mru_output();
             return;
         }
 

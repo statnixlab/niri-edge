@@ -1036,8 +1036,8 @@ impl XdgShellHandler for State {
 
         if let Some(output) = output {
             self.niri.queue_redraw(&output);
-            self.niri.queue_redraw_mru_output();
         }
+        self.niri.queue_redraw_mru_output();
     }
 
     fn popup_destroyed(&mut self, surface: PopupSurface) {

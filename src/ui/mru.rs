@@ -594,6 +594,19 @@ impl WindowMru {
             }
         }
 
+        // Minimized windows are still managed, but have no workspace or output.
+        // Offer them in every scope: activating one restores it on the current workspace.
+        for (_, mapped) in niri
+            .layout
+            .managed_windows()
+            .filter(|(_, m)| m.is_minimized())
+        {
+            let mut thumbnail = Thumbnail::from_mapped(mapped, niri.clock.clone(), config);
+            thumbnail.on_current_output = true;
+            thumbnail.on_current_workspace = true;
+            thumbnails.push(thumbnail);
+        }
+
         thumbnails
             .sort_by(|Thumbnail { timestamp: t1, .. }, Thumbnail { timestamp: t2, .. }| t2.cmp(t1));
 
@@ -1348,12 +1361,16 @@ impl Inner {
             return;
         };
 
-        let Some((_, mapped)) = layout.windows().find(|(_, m)| m.id() == id) else {
-            error!("window in the MRU must be present in the layout");
+        let Some((_, mapped)) = layout.managed_windows().find(|(_, m)| m.id() == id) else {
+            error!("window in the MRU must still be managed");
             return;
         };
 
         thumbnail.update_window(mapped);
+        if mapped.is_minimized() {
+            thumbnail.on_current_output = true;
+            thumbnail.on_current_workspace = true;
+        }
 
         if let Some(prev) = prev_size {
             let new = thumbnail.preview_size(output_size, scale);
@@ -1588,8 +1605,9 @@ impl Inner {
 
         for (thumbnail, geo) in self.thumbnails_in_view_render() {
             let id = thumbnail.id;
-            let Some((mapped, _)) = niri.find_mapped_output_by_id(id) else {
-                error!("window in the MRU must be present in the layout");
+            let Some((_, mapped)) = niri.layout.managed_windows().find(|(_, m)| m.id() == id)
+            else {
+                error!("window in the MRU must still be managed");
                 continue;
             };
 
