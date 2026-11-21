@@ -229,6 +229,7 @@ pub struct Niri {
     pub config_file_watcher: Option<Watcher>,
 
     pub window_layout_memory: crate::window_layout_memory::WindowLayoutMemory,
+    pub window_size_memory: crate::window_size_memory::WindowSizeMemory,
 
     pub event_loop: LoopHandle<'static, State>,
     pub scheduler: Scheduler<()>,
@@ -2864,6 +2865,10 @@ impl Niri {
             .then(crate::window_layout_memory::WindowLayoutMemory::default_path)
             .flatten();
         let window_layout_memory = crate::window_layout_memory::WindowLayoutMemory::new(memory_path);
+        let window_size_path = matches!(backend, Backend::Tty(_))
+            .then(crate::window_size_memory::WindowSizeMemory::default_path)
+            .flatten();
+        let window_size_memory = crate::window_size_memory::WindowSizeMemory::new(window_size_path);
 
         let (blocker_cleared_tx, blocker_cleared_rx) = mpsc::channel();
 
@@ -3123,6 +3128,7 @@ impl Niri {
             config_file_output_config,
             config_file_watcher: None,
             window_layout_memory,
+            window_size_memory,
 
             event_loop,
             scheduler,
@@ -4720,6 +4726,7 @@ impl Niri {
     }
 
     pub(crate) fn remember_window_layouts(&mut self) {
+        self.remember_window_sizes();
         if self.config.borrow().layout.remember_window_layout {
             let observations = self
                 .layout
@@ -4751,6 +4758,47 @@ impl Niri {
         } else {
             self.window_layout_memory.reset_observations();
         }
+    }
+
+    fn remember_window_sizes(&mut self) {
+        let enabled = self.config.borrow().layout.remember_window_size;
+        let observations = self
+            .layout
+            .managed_windows()
+            .map(|(_, window)| {
+                let normal = window.pending_sizing_mode().is_normal()
+                    && !window.is_pending_windowed_fullscreen();
+                let observation = normal
+                    .then(|| {
+                        crate::window_size_memory::memory_key(
+                            window.toplevel(),
+                            window.rules(),
+                            enabled,
+                        )
+                    })
+                    .flatten()
+                    .and_then(|key| {
+                        let ws = self
+                            .layout
+                            .workspaces()
+                            .find(|(_, _, ws)| ws.has_window(&window.window))
+                            .map(|(_, _, ws)| ws)?;
+                        let observed = if ws.is_floating(&window.window) {
+                            crate::window_size_memory::Observed::Floating(window.size())
+                        } else {
+                            let (proportion, full_width) =
+                                ws.normal_column_width(&window.window)?;
+                            crate::window_size_memory::Observed::Tiled {
+                                proportion,
+                                full_width,
+                            }
+                        };
+                        Some((key, observed))
+                    });
+                (window.id().get(), observation)
+            })
+            .collect::<Vec<_>>();
+        self.window_size_memory.observe(observations);
     }
 
     pub fn refresh_idle_inhibit(&mut self) {

@@ -35,6 +35,8 @@ pub struct Layout {
     pub floating_windows_restore_normal_size: bool,
     /// Remember the most recently selected normal layout of each application.
     pub remember_window_layout: bool,
+    /// Remember the last floating size and tiled column width of each application.
+    pub remember_window_size: bool,
     pub empty_workspace_above_first: bool,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
@@ -68,6 +70,7 @@ impl Default for Layout {
             floating_windows_detach_on_mod_drag: false,
             floating_windows_restore_normal_size: false,
             remember_window_layout: false,
+            remember_window_size: false,
             empty_workspace_above_first: false,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
@@ -102,6 +105,7 @@ impl MergeWith<LayoutPart> for Layout {
             floating_windows_detach_on_mod_drag,
             floating_windows_restore_normal_size,
             remember_window_layout,
+            remember_window_size,
             empty_workspace_above_first,
             gaps,
         );
@@ -171,6 +175,8 @@ pub struct LayoutPart {
     pub floating_windows_restore_normal_size: Option<Flag>,
     #[knuffel(child)]
     pub remember_window_layout: Option<Flag>,
+    #[knuffel(child)]
+    pub remember_window_size: Option<Flag>,
     #[knuffel(child)]
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]

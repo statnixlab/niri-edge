@@ -73,6 +73,12 @@ pub struct ResolvedWindowRules {
     /// Exclude auxiliary windows from application layout memory when false.
     pub remember_window_layout: Option<bool>,
 
+    /// Include (true) or exclude (false) the window from application size memory.
+    pub remember_window_size: Option<bool>,
+
+    /// Remember this window's size separately from the application's main windows.
+    pub window_memory_group: Option<String>,
+
     /// Whether the window should open focused.
     pub open_focused: Option<bool>,
 
@@ -264,6 +270,14 @@ impl ResolvedWindowRules {
 
                 if let Some(x) = rule.remember_window_layout {
                     resolved.remember_window_layout = Some(x);
+                }
+
+                if let Some(x) = rule.remember_window_size {
+                    resolved.remember_window_size = Some(x);
+                }
+
+                if let Some(x) = &rule.window_memory_group {
+                    resolved.window_memory_group = Some(x.clone());
                 }
 
                 if let Some(x) = rule.open_focused {

@@ -490,6 +490,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.floating.has_window(id)
     }
 
+    /// See [`ScrollingSpace::normal_column_width`]; `None` for floating windows.
+    pub fn normal_column_width(&self, id: &W::Id) -> Option<(f64, bool)> {
+        self.scrolling.normal_column_width(id)
+    }
+
     pub fn current_output(&self) -> Option<&Output> {
         self.output.as_ref()
     }

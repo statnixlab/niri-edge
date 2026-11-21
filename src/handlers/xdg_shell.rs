@@ -1267,7 +1267,7 @@ impl State {
         let mut floating_width = None;
         let mut height = None;
         let mut floating_height = None;
-        let is_full_width = rules.open_maximized.unwrap_or(false);
+        let mut is_full_width = rules.open_maximized.unwrap_or(false);
         let is_floating = self.niri.window_layout_memory.open_floating(
             &rules,
             toplevel,
@@ -1306,6 +1306,22 @@ impl State {
             floating_width = ws.resolve_default_width(rules.default_width, true);
             height = ws.resolve_default_height(rules.default_height, false);
             floating_height = ws.resolve_default_height(rules.default_height, true);
+            if let Some(record) = self.niri.window_size_memory.open_record(
+                &rules,
+                toplevel,
+                self.niri.config.borrow().layout.remember_window_size,
+            ) {
+                if let Some(size) = record.floating {
+                    floating_width = Some(PresetSize::Fixed(size.width));
+                    floating_height = Some(PresetSize::Fixed(size.height));
+                }
+                if let Some(proportion) = record.tiled_width {
+                    width = Some(PresetSize::Proportion(proportion));
+                }
+                if rules.open_maximized.is_none() {
+                    is_full_width = record.tiled_full_width.unwrap_or(false);
+                }
+            }
 
             let configure_width = if is_floating {
                 floating_width

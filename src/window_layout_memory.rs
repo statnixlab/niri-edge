@@ -197,7 +197,7 @@ impl WindowLayoutMemory {
     }
 }
 
-fn valid_app_id(id: &str) -> bool {
+pub(crate) fn valid_app_id(id: &str) -> bool {
     !id.trim().is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
 }
 
@@ -222,7 +222,7 @@ pub fn rememberable_app_id(
     with_toplevel_role(toplevel, |role| role.app_id.clone()).filter(|id| valid_app_id(id))
 }
 
-fn write_atomic(path: &Path, state: &SavedState) -> io::Result<()> {
+pub(crate) fn write_atomic<T: Serialize>(path: &Path, state: &T) -> io::Result<()> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
@@ -231,8 +231,12 @@ fn write_atomic(path: &Path, state: &SavedState) -> io::Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(parent)?;
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
     let temp = parent.join(format!(
-        ".window-layouts-{}-{}.tmp",
+        ".{name}-{}-{}.tmp",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));

@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use niri_ipc::PositionChange;
+use niri_ipc::{PositionChange, SizeChange};
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::reexports::calloop::Interest;
@@ -24,6 +24,52 @@ use crate::niri::{CastTarget, ClientState, LockState, State};
 use crate::utils::transaction::Transaction;
 use crate::utils::{is_mapped, send_scale_transform};
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped};
+
+impl State {
+    /// Some clients (e.g. Steam through Xwayland) ignore the size of the initial configure and
+    /// map at a size of their own choosing, but follow later resizes. Apply the remembered
+    /// floating size once more right after mapping when the first committed size differs.
+    fn enforce_remembered_floating_size(
+        &mut self,
+        window: &smithay::desktop::Window,
+        toplevel: &smithay::wayland::shell::xdg::ToplevelSurface,
+        is_floating: bool,
+    ) {
+        if !is_floating {
+            return;
+        }
+        let Some((mapped, _)) = self.niri.layout.find_window_and_output(toplevel.wl_surface())
+        else {
+            return;
+        };
+        if !mapped.pending_sizing_mode().is_normal() {
+            return;
+        }
+        let enabled = self.niri.config.borrow().layout.remember_window_size;
+        let Some(size) = self
+            .niri
+            .window_size_memory
+            .open_record(mapped.rules(), toplevel, enabled)
+            .and_then(|record| record.floating)
+        else {
+            return;
+        };
+        let current = mapped.size();
+        if current.w <= 0 || current.h <= 0 {
+            return;
+        }
+        if current.w != size.width {
+            self.niri
+                .layout
+                .set_window_width(Some(window), SizeChange::SetFixed(size.width));
+        }
+        if current.h != size.height {
+            self.niri
+                .layout
+                .set_window_height(Some(window), SizeChange::SetFixed(size.height));
+        }
+    }
+}
 
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -208,6 +254,7 @@ impl CompositorHandler for State {
                     // The mapped pre-commit hook deals with dma-bufs on its own.
                     self.remove_default_dmabuf_pre_commit_hook(surface);
                     let hook = add_mapped_toplevel_pre_commit_hook(toplevel);
+                    let mapped_toplevel = toplevel.clone();
                     let mapped = {
                         let config = self.niri.config.borrow();
                         Mapped::new(window, rules, hook, &config)
@@ -251,6 +298,8 @@ impl CompositorHandler for State {
                     } else {
                         error!("layout is missing the window that we just added");
                     }
+
+                    self.enforce_remembered_floating_size(&window, &mapped_toplevel, is_floating);
 
                     if wants_minimized {
                         self.minimize_window(Some(id));

@@ -316,6 +316,16 @@ struct MoveAnimation {
 }
 
 impl<W: LayoutElement> ScrollingSpace<W> {
+    /// Width of the column holding `window` as a proportion of the working area (the width it
+    /// restores to when full-width), and whether it is full-width; `None` while that column is
+    /// maximized or fullscreen.
+    pub fn normal_column_width(&self, window: &W::Id) -> Option<(f64, bool)> {
+        self.columns
+            .iter()
+            .find(|col| col.contains(window))?
+            .normal_width()
+    }
+
     pub fn new(
         view_size: Size<f64, Logical>,
         parent_area: Rectangle<f64, Logical>,
@@ -4603,6 +4613,19 @@ impl<W: LayoutElement> Column<W> {
             }
             ColumnWidth::Fixed(width) => width,
         }
+    }
+
+    /// Restorable width as a proportion of the working area and whether the column is
+    /// full-width, or `None` while maximized or fullscreen.
+    fn normal_width(&self) -> Option<(f64, bool)> {
+        if self.is_pending_fullscreen || self.is_pending_maximized {
+            return None;
+        }
+        let proportion = match self.width {
+            ColumnWidth::Proportion(proportion) => proportion,
+            ColumnWidth::Fixed(width) => self.width_px_to_proportion(width),
+        };
+        Some((proportion, self.is_full_width))
     }
 
     fn width_px_to_proportion(&self, width_px: f64) -> f64 {

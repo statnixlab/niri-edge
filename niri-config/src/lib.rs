@@ -2017,6 +2017,7 @@ mod tests {
                 floating_windows_detach_on_mod_drag: false,
                 floating_windows_restore_normal_size: false,
                 remember_window_layout: false,
+                remember_window_size: false,
                 empty_workspace_above_first: false,
                 default_column_display: Tabbed,
                 gaps: 8.0,
@@ -2365,6 +2366,8 @@ mod tests {
                         false,
                     ),
                     remember_window_layout: None,
+                    remember_window_size: None,
+                    window_memory_group: None,
                     open_focused: Some(
                         true,
                     ),

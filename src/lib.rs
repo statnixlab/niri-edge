@@ -25,6 +25,7 @@ pub mod ui;
 pub mod utils;
 pub mod window;
 pub mod window_layout_memory;
+pub mod window_size_memory;
 
 #[cfg(test)]
 mod tests;
